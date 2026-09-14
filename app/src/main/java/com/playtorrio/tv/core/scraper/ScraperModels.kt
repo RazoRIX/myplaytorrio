@@ -24,7 +24,8 @@ data class ScraperStreamResult(
     val url: String,
     val quality: String? = null,
     val headers: Map<String, String>? = null,
-    val behaviorHints: Map<String, Any?>? = null
+    val behaviorHints: Map<String, Any?>? = null,
+    val provider: String? = null
 ) {
     fun toDomainStream(): Stream {
         val finalHeaders = headers ?: emptyMap()
@@ -47,12 +48,15 @@ data class ScraperStreamResult(
             ),
             addonName = "PlayTorrioHTTP",
             addonLogo = null,
-            quality = quality
+            quality = quality,
+            provider = provider
         )
     }
 }
 
 interface StreamScraper {
+    val id: String get() = javaClass.simpleName.removeSuffix("Scraper")
+    val displayName: String get() = id
     val name: String get() = "PlayTorrioHTTP"
     suspend fun scrape(request: ScraperMediaRequest): List<ScraperStreamResult>
 }

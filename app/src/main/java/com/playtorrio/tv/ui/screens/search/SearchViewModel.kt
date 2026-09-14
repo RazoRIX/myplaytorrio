@@ -245,12 +245,18 @@ class SearchViewModel @Inject constructor(
     }
 
     private fun onQueryChanged(query: String) {
+        val trimmedInput = query.trim()
+        val networkMatches = if (trimmedInput.length >= MIN_SEARCH_QUERY_LENGTH) {
+            com.playtorrio.tv.core.tmdb.NetworkDirectory.search(trimmedInput)
+        } else {
+            emptyList()
+        }
         _uiState.update {
-            val trimmedInput = query.trim()
             it.copy(
                 query = query,
                 error = null,
                 isSearching = false,
+                networkResults = networkMatches,
                 // Keep whatever is on screen while a keystroke waits to run. Clearing here flashed
                 // the no-results state on every letter, because on a remote each letter outlasts the
                 // debounce. The screen renders skeleton rows for this window instead.
@@ -447,10 +453,16 @@ class SearchViewModel @Inject constructor(
         if (!keepSuggestions) {
             suggestionJob?.cancel()
         }
+        val networkMatches = if (query.length >= MIN_SEARCH_QUERY_LENGTH) {
+            com.playtorrio.tv.core.tmdb.NetworkDirectory.search(query)
+        } else {
+            emptyList()
+        }
         _uiState.update {
             it.copy(
                 submittedQuery = submittedSearchQuery(query),
                 query = rawQuery,
+                networkResults = networkMatches,
                 suggestions = if (keepSuggestions) it.suggestions else emptyList()
             )
         }
@@ -465,6 +477,7 @@ class SearchViewModel @Inject constructor(
                 it.copy(
                     isSearching = false,
                     error = null,
+                    networkResults = emptyList(),
                     catalogRows = emptyList()
                 )
             }

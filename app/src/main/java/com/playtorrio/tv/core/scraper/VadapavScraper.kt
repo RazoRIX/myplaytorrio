@@ -35,17 +35,6 @@ class VadapavScraper : StreamScraper {
             targetIds.add(request.imdbId)
         }
 
-        val tmdbId = request.tmdbId ?: TmdbScraperHelper.resolveTmdbId(
-            imdbId = request.imdbId,
-            title = request.title,
-            type = if (isTv) "tv" else "movie",
-            year = request.year
-        )
-
-        if (tmdbId != null && tmdbId > 0) {
-            targetIds.add("tmdb:$tmdbId")
-        }
-
         if (targetIds.isEmpty()) return@withContext emptyList()
         val seenUrls = mutableSetOf<String>()
 
@@ -76,10 +65,16 @@ class VadapavScraper : StreamScraper {
                                 if (url.isBlank() || !url.startsWith("http") || seenUrls.contains(url)) {
                                     continue
                                 }
-                                seenUrls.add(url)
 
                                 val rawTitle = item.optString("title").ifEmpty { "vadapav.mov • Direct Stream" }
                                 val rawName = item.optString("name").ifEmpty { "vadapav.mov" }
+
+                                // Strict title matching to prevent misclassified or default fallback streams
+                                if (!isTitleMatching(request.title, rawTitle, url)) {
+                                    continue
+                                }
+
+                                seenUrls.add(url)
 
                                 results.add(
                                     ScraperStreamResult(
@@ -101,5 +96,34 @@ class VadapavScraper : StreamScraper {
         }
 
         results
+    }
+
+    private fun isTitleMatching(requestedTitle: String, streamTitle: String, streamUrl: String): Boolean {
+        val cleanReq = requestedTitle.lowercase().replace(Regex("[^a-z0-9]"), "")
+        if (cleanReq.isBlank()) return true
+
+        val cleanTitle = streamTitle.lowercase().replace(Regex("[^a-z0-9]"), "")
+        val cleanUrl = streamUrl.lowercase().replace(Regex("[^a-z0-9]"), "")
+
+        if (cleanTitle.contains(cleanReq) || cleanUrl.contains(cleanReq)) {
+            return true
+        }
+
+        val stopWords = setOf("the", "a", "an", "and", "or", "of", "in", "on", "at", "to", "for", "with", "part", "vol")
+        val words = requestedTitle.lowercase()
+            .split(Regex("[^a-z0-9]+"))
+            .filter { it.length >= 3 && it !in stopWords }
+
+        if (words.isEmpty()) {
+            return cleanTitle.contains(cleanReq) || cleanUrl.contains(cleanReq)
+        }
+
+        if (words.size == 1) {
+            val w = words[0]
+            return cleanTitle.contains(w) || cleanUrl.contains(w)
+        }
+
+        val matchedWords = words.count { w -> cleanTitle.contains(w) || cleanUrl.contains(w) }
+        return (matchedWords.toDouble() / words.size.toDouble()) >= 0.6
     }
 }

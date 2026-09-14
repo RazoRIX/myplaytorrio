@@ -198,8 +198,9 @@ internal class PlayerMediaSourceFactory(private val context: Context) {
         }
 
         val extractorsFactory = customExtractorsFactory ?: DefaultExtractorsFactory()
+        val effectiveErrorPolicy = if (isIptvStream) iptvLiveLoadErrorHandlingPolicy else loadErrorHandlingPolicy
         val defaultFactory = DefaultMediaSourceFactory(progressiveFactory, extractorsFactory).apply {
-            setLoadErrorHandlingPolicy(loadErrorHandlingPolicy)
+            setLoadErrorHandlingPolicy(effectiveErrorPolicy)
             customSubtitleParserFactory?.let { parserFactory ->
                 setSubtitleParserFactory(parserFactory)
             }
@@ -214,7 +215,6 @@ internal class PlayerMediaSourceFactory(private val context: Context) {
             )
         }
 
-        val effectiveErrorPolicy = if (isIptvStream) iptvLiveLoadErrorHandlingPolicy else loadErrorHandlingPolicy
         val mediaSource = when {
             isHls && !forceDefaultFactory -> HlsMediaSource.Factory(httpDataSourceFactory)
                 .setAllowChunklessPreparation(true)
@@ -346,7 +346,25 @@ internal class PlayerMediaSourceFactory(private val context: Context) {
                 val value = (rawValue as? String)?.trim().orEmpty()
                 if (key.isEmpty() || value.isEmpty()) return@forEach
                 if (key.equals("Range", ignoreCase = true)) return@forEach
-                sanitized[key] = value
+
+                // Clean key and value to prevent OkHttp IllegalArgumentException on non-ASCII chars
+                val cleanKey = key.filter { it.code in 0x21..0x7E }
+                val cleanValue = value.map { ch ->
+                    when {
+                        ch.code in 0x20..0x7E || ch == '\t' -> ch
+                        ch == '\u0435' -> 'e'
+                        ch == '\u0415' -> 'E'
+                        ch == '\u0430' -> 'a'
+                        ch == '\u043E' -> 'o'
+                        ch == '\u0440' -> 'p'
+                        ch == '\u0441' -> 'c'
+                        else -> ' '
+                    }
+                }.joinToString("").trim()
+
+                if (cleanKey.isNotEmpty() && cleanValue.isNotEmpty()) {
+                    sanitized[cleanKey] = cleanValue
+                }
             }
             return sanitized
         }

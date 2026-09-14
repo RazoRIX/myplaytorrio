@@ -1,5 +1,6 @@
 package com.playtorrio.tv.ui.screens.detail
 
+import com.playtorrio.tv.domain.model.MetaCompany
 import com.playtorrio.tv.ui.theme.PlayTorrioMotion
 
 import android.view.KeyEvent as AndroidKeyEvent
@@ -13,6 +14,9 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,7 +28,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -109,7 +115,8 @@ fun HeroContentSection(
     restorePlayFocusToken: Int = 0,
     onHeroActionFocused: () -> Unit = {},
     onPlayFocusRestored: () -> Unit = {},
-    onShowFullDescription: () -> Unit = {}
+    onShowFullDescription: () -> Unit = {},
+    onEntityClick: ((entityKind: String, entityId: Int, entityName: String) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val isSeriesApi = remember(meta.apiType) {
@@ -331,6 +338,16 @@ fun HeroContentSection(
                         showFullReleaseDate = showFullReleaseDate,
                         tmdbRating = tmdbRating
                     )
+
+                    if (onEntityClick != null && (meta.productionCompanies.isNotEmpty() || meta.networks.isNotEmpty())) {
+                        Spacer(modifier = Modifier.height(PlayTorrioTheme.spacing.md))
+                        HeroStudiosRow(
+                            productionCompanies = meta.productionCompanies,
+                            networks = meta.networks,
+                            onHeroActionFocused = onHeroActionFocused,
+                            onEntityClick = onEntityClick
+                        )
+                    }
                 }
             }
         }
@@ -928,4 +945,97 @@ private fun MetaInfoDivider() {
         style = MaterialTheme.typography.labelLarge,
         color = PlayTorrioTheme.extendedColors.textTertiary
     )
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun HeroStudiosRow(
+    productionCompanies: List<MetaCompany>,
+    networks: List<MetaCompany>,
+    onHeroActionFocused: () -> Unit,
+    onEntityClick: (entityKind: String, entityId: Int, entityName: String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val items = remember(productionCompanies, networks) {
+        val list = mutableListOf<Pair<String, MetaCompany>>()
+        networks.forEach { list.add("network" to it) }
+        productionCompanies.forEach { list.add("company" to it) }
+        list.distinctBy { (kind, comp) -> "$kind:${comp.name}" }.take(6)
+    }
+    if (items.isEmpty()) return
+
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        items.forEach { (kind, company) ->
+            HeroStudioChip(
+                kind = kind,
+                company = company,
+                onFocused = onHeroActionFocused,
+                onClick = {
+                    val id = company.tmdbId ?: 0
+                    onEntityClick(kind, id, company.name)
+                }
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun HeroStudioChip(
+    kind: String,
+    company: MetaCompany,
+    onFocused: () -> Unit,
+    onClick: () -> Unit
+) {
+    var isFocused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(8.dp)
+
+    Box(
+        modifier = Modifier
+            .onFocusChanged {
+                isFocused = it.isFocused
+                if (it.isFocused) onFocused()
+            }
+            .clip(shape)
+            .background(
+                if (isFocused) PlayTorrioTheme.colors.SurfaceVariant
+                else PlayTorrioTheme.colors.Surface.copy(alpha = 0.6f)
+            )
+            .border(
+                width = if (isFocused) 1.5.dp else 1.dp,
+                color = if (isFocused) PlayTorrioTheme.colors.Secondary else Color.White.copy(alpha = 0.15f),
+                shape = shape
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            if (!company.logo.isNullOrBlank()) {
+                AsyncImage(
+                    model = company.logo,
+                    contentDescription = company.name,
+                    modifier = Modifier
+                        .height(16.dp)
+                        .widthIn(max = 48.dp),
+                    contentScale = ContentScale.Fit,
+                    colorFilter = if (!isFocused) ColorFilter.tint(Color.White.copy(alpha = 0.85f)) else null
+                )
+            }
+            Text(
+                text = company.name,
+                style = MaterialTheme.typography.labelMedium,
+                color = if (isFocused) PlayTorrioTheme.colors.TextPrimary else PlayTorrioTheme.colors.TextSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
 }

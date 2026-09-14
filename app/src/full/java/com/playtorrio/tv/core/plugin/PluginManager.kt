@@ -241,6 +241,17 @@ class PluginManager @Inject constructor(
         kotlinx.coroutines.SupervisorJob() + Dispatchers.IO
     )
 
+    init {
+        syncScope.launch {
+            try {
+                com.playtorrio.tv.core.runtime.PluginRuntimeHooks.ensureCloudstreamInitialized()
+                ensureBundledPhisherRepository()
+            } catch (e: Exception) {
+                Log.w(TAG, "Background bundled repo install failed: ${e.message}")
+            }
+        }
+    }
+
     var isSyncingFromRemote = false
 
     /** Prevents concurrent reconciliation from StartupSyncService and AccountViewModel */
@@ -428,6 +439,8 @@ class PluginManager @Inject constructor(
             return Result.success(existingRepo)
         }
 
+        val isBundled = repoUrl.contains("phisher", ignoreCase = true) ||
+            parseResult.name.contains("phisher", ignoreCase = true)
         val repo = PluginRepository(
             id = UUID.randomUUID().toString(),
             name = parseResult.name,
@@ -436,7 +449,8 @@ class PluginManager @Inject constructor(
             enabled = true,
             lastUpdated = System.currentTimeMillis(),
             scraperCount = parseResult.plugins.size,
-            type = RepositoryType.EXTERNAL_DEX
+            type = RepositoryType.EXTERNAL_DEX,
+            isBundled = isBundled
         )
 
         dataStore.addRepository(repo)
@@ -510,7 +524,12 @@ class PluginManager @Inject constructor(
 
         if (shouldRemoveMissingLocal) {
             initialLocalRepos
-                .filter { normalizeUrl(it.url) !in remoteUrlSet }
+                .filter {
+                    normalizeUrl(it.url) !in remoteUrlSet &&
+                        normalizeUrl(it.url) != normalizeUrl(BUNDLED_PHISHER_REPO_URL) &&
+                        !it.name.contains("Phisher", ignoreCase = true) &&
+                        !it.isBundled
+                }
                 .forEach { repo ->
                     Log.d(TAG, "reconcile: removing local repo not in remote: ${repo.name} (${repo.url})")
                     removeRepository(repo.id)
@@ -1093,6 +1112,11 @@ class PluginManager @Inject constructor(
                             ?.ifEmpty { listOf("movie", "tv") }
                             ?: listOf("movie", "tv")
 
+                        val defaultEnabled = plugin.status == 1 &&
+                            plugin.name != "StremioAddon" &&
+                            plugin.name != "StremioX" &&
+                            plugin.name != "Jellyfin"
+
                         val scraper = ScraperInfo(
                             id = scraperId,
                             repositoryId = repoId,
@@ -1101,12 +1125,13 @@ class PluginManager @Inject constructor(
                             version = plugin.version.toString(),
                             filename = plugin.url,
                             supportedTypes = supportedTypes,
-                            enabled = true,
+                            enabled = defaultEnabled,
                             manifestEnabled = plugin.status == 1,
                             logo = plugin.iconUrl,
                             contentLanguage = emptyList(),
                             formats = null,
-                            type = RepositoryType.EXTERNAL_DEX
+                            type = RepositoryType.EXTERNAL_DEX,
+                            isBundled = true
                         )
 
                         newScrapers.add(scraper)
@@ -1129,7 +1154,58 @@ class PluginManager @Inject constructor(
         Log.d(TAG, "Downloaded ${newScrapers.size}/${plugins.size} extensions for repo $repoId")
     }
 
+    suspend fun ensureBundledPhisherRepository(): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val alreadyInstalled = dataStore.bundledPhisherInstalled.first()
+            val existingRepos = dataStore.repositories.first()
+            val existing = existingRepos.find {
+                normalizeUrl(it.url) == normalizeUrl(BUNDLED_PHISHER_REPO_URL) ||
+                    it.name.contains("Phisher", ignoreCase = true) ||
+                    it.isBundled
+            }
+
+            if (existing != null) {
+                if (!alreadyInstalled) {
+                    dataStore.setBundledPhisherInstalled(true)
+                }
+                if (!existing.isBundled) {
+                    dataStore.updateRepository(existing.copy(isBundled = true))
+                }
+                val allScrapers = dataStore.scrapers.first()
+                if (allScrapers.any { it.repositoryId == existing.id && !it.isBundled }) {
+                    val updated = allScrapers.map {
+                        if (it.repositoryId == existing.id) it.copy(isBundled = true) else it
+                    }
+                    dataStore.saveScrapers(updated)
+                }
+                // Check if scrapers are already downloaded
+                val scrapersForRepo = dataStore.scrapers.first().filter { it.repositoryId == existing.id }
+                if (scrapersForRepo.isNotEmpty()) {
+                    Log.d(TAG, "Bundled Phisher repository already installed with ${scrapersForRepo.size} scrapers")
+                    return@withContext Result.success(Unit)
+                }
+                Log.d(TAG, "Bundled Phisher repo found but has 0 scrapers; downloading extensions...")
+                refreshExternalRepository(existing)
+                return@withContext Result.success(Unit)
+            }
+
+            Log.d(TAG, "Auto-installing bundled Phisher repository: $BUNDLED_PHISHER_REPO_URL")
+            val result = addRepository(BUNDLED_PHISHER_REPO_URL)
+            if (result.isSuccess) {
+                dataStore.setBundledPhisherInstalled(true)
+                Result.success(Unit)
+            } else {
+                Result.failure(result.exceptionOrNull() ?: Exception("Failed to add Phisher repo"))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to ensure bundled Phisher repository: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
     companion object {
         private const val MAX_PARALLEL_DOWNLOADS = 10
+        const val BUNDLED_PHISHER_REPO_URL = "https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/refs/heads/builds/repo.json"
+        const val BUNDLED_PHISHER_REPO_NAME = "Phisher Repo"
     }
 }

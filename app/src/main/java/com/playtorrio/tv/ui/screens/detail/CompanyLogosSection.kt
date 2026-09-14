@@ -56,8 +56,7 @@ fun CompanyLogosSection(
 
     val focusRequesters = remember(companies) {
         companies
-            .mapNotNull { company -> company.tmdbId?.let { it to FocusRequester() } }
-            .toMap()
+            .associate { (it.tmdbId ?: it.name.hashCode()) to FocusRequester() }
     }
 
     LaunchedEffect(restoreCompanyId, restoreFocusToken) {
@@ -94,7 +93,7 @@ fun CompanyLogosSection(
             ) { _, company ->
                 CompanyLogoCard(
                     company = company,
-                    focusRequester = focusRequesters[company.tmdbId],
+                    focusRequester = focusRequesters[company.tmdbId ?: company.name.hashCode()],
                     onClick = { onCompanyClick(company) }
                 )
             }
@@ -124,11 +123,7 @@ private fun CompanyLogoCard(
     var logoLoadFailed by remember(company.logo) { mutableStateOf(false) }
 
     Card(
-        onClick = {
-            if (company.tmdbId != null) {
-                onClick()
-            }
-        },
+        onClick = onClick,
         modifier = Modifier
             .width(140.dp)
             .height(PlayTorrioTheme.spacing.huge)

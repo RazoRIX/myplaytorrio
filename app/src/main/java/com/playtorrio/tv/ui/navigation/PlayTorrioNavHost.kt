@@ -9,6 +9,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
@@ -1251,7 +1252,17 @@ fun PlayTorrioNavHost(
                         Screen.CatalogSeeAll.createRoute(catalogId, addonId, type, fromSearch = true)
                     )
                 },
-                onOpenDiscover = { navController.navigate(Screen.Discover.route) }
+                onOpenDiscover = { navController.navigate(Screen.Discover.route) },
+                onNavigateToTmdbEntityBrowse = { entityKind, entityId, entityName ->
+                    navController.navigate(
+                        Screen.TmdbEntityBrowse.createRoute(
+                            entityKind = entityKind,
+                            entityId = entityId,
+                            entityName = entityName,
+                            sourceType = "movie"
+                        )
+                    )
+                }
             )
         }
 
@@ -1322,8 +1333,15 @@ fun PlayTorrioNavHost(
             )
         }
 
-        composable(Screen.IptvPortals.route) {
-            val iptvViewModel: IptvViewModel = hiltViewModel()
+        composable(Screen.IptvPortals.route) { backStackEntry ->
+            val parentEntry = remember(backStackEntry) {
+                runCatching { navController.getBackStackEntry(Screen.Iptv.route) }.getOrNull()
+            }
+            val iptvViewModel: IptvViewModel = if (parentEntry != null) {
+                hiltViewModel(parentEntry)
+            } else {
+                hiltViewModel()
+            }
             IptvPortalsScreen(
                 viewModel = iptvViewModel,
                 onBack = { navController.popBackStack() },
@@ -1357,7 +1375,14 @@ fun PlayTorrioNavHost(
                 }
             )
         ) { backStackEntry ->
-            val iptvViewModel: IptvViewModel = hiltViewModel()
+            val parentEntry = remember(backStackEntry) {
+                runCatching { navController.getBackStackEntry(Screen.Iptv.route) }.getOrNull()
+            }
+            val iptvViewModel: IptvViewModel = if (parentEntry != null) {
+                hiltViewModel(parentEntry)
+            } else {
+                hiltViewModel()
+            }
             val portalUrl = java.net.URLDecoder.decode(backStackEntry.arguments?.getString("portalUrl").orEmpty(), "UTF-8")
             val portalUser = java.net.URLDecoder.decode(backStackEntry.arguments?.getString("portalUser").orEmpty(), "UTF-8")
             val portalPass = java.net.URLDecoder.decode(backStackEntry.arguments?.getString("portalPass").orEmpty(), "UTF-8")
@@ -1669,7 +1694,14 @@ fun PlayTorrioNavHost(
                 showBuiltInHeader = !hideBuiltInHeaders,
                 onBackPress = { navController.popBackStack() },
                 onNavigateToCatalogOrder = { navController.navigate(Screen.CatalogOrder.route) },
-                onNavigateToCollections = { navController.navigate(Screen.Collections.route) }
+                onNavigateToCollections = { navController.navigate(Screen.Collections.route) },
+                onNavigateToPlayTorrioHttpProviders = { navController.navigate(Screen.PlayTorrioHttpProviders.route) }
+            )
+        }
+
+        composable(Screen.PlayTorrioHttpProviders.route) {
+            com.playtorrio.tv.ui.screens.addon.PlayTorrioHttpProvidersScreen(
+                onBackPress = { navController.popBackStack() }
             )
         }
 

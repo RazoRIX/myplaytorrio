@@ -13,6 +13,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -106,12 +107,16 @@ fun CastDetailScreen(
     onNavigateToDetail: (itemId: String, itemType: String, addonBaseUrl: String?) -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val selectedFilter by viewModel.selectedFilter.collectAsState()
     val watchedMovieIds by viewModel.watchedMovieIds.collectAsState()
     val watchedSeriesIds by viewModel.watchedSeriesIds.collectAsState()
     var isBiographyExpanded by rememberSaveable(viewModel.personId) { mutableStateOf(false) }
+    var fullScreenPhotoIndex by rememberSaveable(viewModel.personId) { mutableStateOf<Int?>(null) }
 
     BackHandler {
-        if (isBiographyExpanded && uiState is CastDetailUiState.Success) {
+        if (fullScreenPhotoIndex != null) {
+            fullScreenPhotoIndex = null
+        } else if (isBiographyExpanded && uiState is CastDetailUiState.Success) {
             isBiographyExpanded = false
         } else {
             onBackPress()
@@ -139,9 +144,12 @@ fun CastDetailScreen(
                 is CastDetailUiState.Success -> {
                     CastDetailContent(
                         person = state.personDetail,
+                        selectedFilter = selectedFilter,
+                        onFilterSelected = { viewModel.setFilter(it) },
                         isBiographyExpanded = isBiographyExpanded,
                         onBiographyExpandedChange = { isBiographyExpanded = it },
                         onNavigateToDetail = onNavigateToDetail,
+                        onPhotoClick = { fullScreenPhotoIndex = it },
                         posterOptions = viewModel.posterOptions,
                         posterCardCornerRadiusDp = viewModel.posterCardCornerRadiusDp.collectAsState().value,
                         isItemWatched = { item ->
@@ -151,6 +159,15 @@ fun CastDetailScreen(
                     )
                 }
             }
+        }
+
+        val successState = uiState as? CastDetailUiState.Success
+        if (fullScreenPhotoIndex != null && successState != null && successState.personDetail.photos.isNotEmpty()) {
+            FullScreenPhotoViewer(
+                photos = successState.personDetail.photos,
+                initialIndex = fullScreenPhotoIndex ?: 0,
+                onDismiss = { fullScreenPhotoIndex = null }
+            )
         }
 
         val posterOptionsState by viewModel.posterOptions.state.collectAsState()
@@ -168,9 +185,12 @@ fun CastDetailScreen(
 @Composable
 private fun CastDetailContent(
     person: PersonDetail,
+    selectedFilter: CastCreditFilter,
+    onFilterSelected: (CastCreditFilter) -> Unit,
     isBiographyExpanded: Boolean,
     onBiographyExpandedChange: (Boolean) -> Unit,
     onNavigateToDetail: (itemId: String, itemType: String, addonBaseUrl: String?) -> Unit,
+    onPhotoClick: (Int) -> Unit,
     posterOptions: com.playtorrio.tv.ui.components.posteroptions.PosterOptionsController,
     posterCardCornerRadiusDp: Int = 12,
     isItemWatched: (MetaPreview) -> Boolean = { false }
@@ -182,6 +202,18 @@ private fun CastDetailContent(
         (person.movieCredits + person.tvCredits)
             .distinctBy { it.id }
             .sortedByDescending { releaseYearSortKey(it.releaseInfo) }
+    }
+
+    val filteredCredits = remember(selectedFilter, allCredits, person.movieCredits, person.tvCredits) {
+        when (selectedFilter) {
+            CastCreditFilter.ALL -> allCredits
+            CastCreditFilter.MOVIES -> person.movieCredits
+                .distinctBy { it.id }
+                .sortedByDescending { releaseYearSortKey(it.releaseInfo) }
+            CastCreditFilter.TV_SHOWS -> person.tvCredits
+                .distinctBy { it.id }
+                .sortedByDescending { releaseYearSortKey(it.releaseInfo) }
+        }
     }
 
     val filmographyPosterStyle = remember(posterCardCornerRadiusDp) {
@@ -227,7 +259,6 @@ private fun CastDetailContent(
                 )
             )
         }
-        // Accent goes on top of the plain background to provide the Cast theme coloring
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -235,54 +266,73 @@ private fun CastDetailContent(
         )
 
         // Main content
-        AnimatedVisibility(
-            visible = true,
-            enter = fadeIn()
-        ) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                HeroSection(
-                    person = person,
-                    isBiographyExpanded = isBiographyExpanded,
-                    isBiographyTruncated = isBiographyTruncated,
-                    onBiographyTruncationChanged = { isBiographyTruncated = it },
-                    onPortraitClick = {
-                        if (isBiographyExpanded || isBiographyTruncated) {
-                            onBiographyExpandedChange(!isBiographyExpanded)
+        if (isBiographyExpanded) {
+            HeroSection(
+                person = person,
+                isBiographyExpanded = true,
+                isBiographyTruncated = isBiographyTruncated,
+                onBiographyTruncationChanged = { isBiographyTruncated = it },
+                onPortraitClick = { onBiographyExpandedChange(false) },
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            androidx.compose.foundation.lazy.LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 48.dp)
+            ) {
+                item(key = "hero") {
+                    HeroSection(
+                        person = person,
+                        isBiographyExpanded = false,
+                        isBiographyTruncated = isBiographyTruncated,
+                        onBiographyTruncationChanged = { isBiographyTruncated = it },
+                        onPortraitClick = {
+                            if (isBiographyTruncated) {
+                                onBiographyExpandedChange(true)
+                            }
                         }
-                    },
-                    modifier = if (isBiographyExpanded) Modifier.weight(1f) else Modifier
-                )
+                    )
+                }
 
-                AnimatedVisibility(
-                    visible = allCredits.isNotEmpty() && !isBiographyExpanded,
-                    enter = fadeIn() +
-                        expandVertically(expandFrom = Alignment.Top) +
-                        slideInVertically(initialOffsetY = { it / 2 }),
-                    exit = fadeOut() +
-                        shrinkVertically(shrinkTowards = Alignment.Top) +
-                        slideOutVertically(targetOffsetY = { it })
-                ) {
-                    Column {
-                        SectionHeader(
-                            title = stringResource(R.string.cast_detail_filmography),
-                            count = allCredits.size
+                if (person.photos.isNotEmpty()) {
+                    item(key = "photos_section") {
+                        PhotosGallerySection(
+                            photos = person.photos,
+                            onPhotoClick = onPhotoClick
                         )
-                        FilmographyRow(
-                            credits = allCredits,
-                            posterCardStyle = filmographyPosterStyle,
-                            firstItemFocusRequester = firstPosterFocusRequester,
-                            restoreItemId = pendingRestoreItemId,
-                            restoreFocusToken = restoreFocusToken,
-                            onRestoreFocusHandled = { pendingRestoreItemId = null },
-                            onItemClick = { item ->
-                                pendingRestoreItemId = item.id
-                                onNavigateToDetail(item.id, item.apiType, null)
-                            },
-                            onItemLongPress = { item ->
-                                posterOptions.show(item, null)
-                            },
-                            isItemWatched = isItemWatched
-                        )
+                    }
+                }
+
+                if (allCredits.isNotEmpty()) {
+                    item(key = "filmography_section") {
+                        Column {
+                            FilmographyFilterTabs(
+                                selectedFilter = selectedFilter,
+                                allCount = allCredits.size,
+                                moviesCount = person.movieCredits.size,
+                                tvCount = person.tvCredits.size,
+                                onFilterSelected = onFilterSelected
+                            )
+
+                            Spacer(modifier = Modifier.height(PlayTorrioTheme.spacing.xs))
+
+                            FilmographyRow(
+                                credits = filteredCredits,
+                                posterCardStyle = filmographyPosterStyle,
+                                firstItemFocusRequester = firstPosterFocusRequester,
+                                restoreItemId = pendingRestoreItemId,
+                                restoreFocusToken = restoreFocusToken,
+                                onRestoreFocusHandled = { pendingRestoreItemId = null },
+                                onItemClick = { item ->
+                                    pendingRestoreItemId = item.id
+                                    onNavigateToDetail(item.id, item.apiType, null)
+                                },
+                                onItemLongPress = { item ->
+                                    posterOptions.show(item, null)
+                                },
+                                isItemWatched = isItemWatched
+                            )
+                        }
                     }
                 }
             }
@@ -627,6 +677,230 @@ private fun FilmographyRow(
                 }
             )
         }
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun PhotosGallerySection(
+    photos: List<String>,
+    onPhotoClick: (Int) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = PlayTorrioTheme.spacing.md, bottom = PlayTorrioTheme.spacing.sm)
+    ) {
+        SectionHeader(
+            title = "Photos",
+            count = photos.size
+        )
+
+        LazyRow(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(
+                horizontal = PlayTorrioTheme.spacing.xxxl,
+                vertical = PlayTorrioTheme.spacing.xs
+            ),
+            horizontalArrangement = Arrangement.spacedBy(PlayTorrioTheme.spacing.md)
+        ) {
+            itemsIndexed(
+                items = photos,
+                key = { index, photo -> "$index-$photo" }
+            ) { index, photoUrl ->
+                Card(
+                    onClick = { onPhotoClick(index) },
+                    modifier = Modifier
+                        .width(108.dp)
+                        .height(162.dp),
+                    shape = CardDefaults.shape(RoundedCornerShape(12.dp)),
+                    scale = CardDefaults.scale(focusedScale = 1.06f),
+                    border = CardDefaults.border(
+                        focusedBorder = Border(
+                            border = BorderStroke(2.dp, PlayTorrioTheme.colors.Secondary),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                    ),
+                    colors = CardDefaults.colors(containerColor = PlayTorrioTheme.colors.BackgroundCard)
+                ) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(LocalContext.current)
+                            .data(photoUrl)
+                            .crossfade(true)
+                            .build(),
+                        contentDescription = "Photo ${index + 1}",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun FilmographyFilterTabs(
+    selectedFilter: CastCreditFilter,
+    allCount: Int,
+    moviesCount: Int,
+    tvCount: Int,
+    onFilterSelected: (CastCreditFilter) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+                start = PlayTorrioTheme.spacing.xxxl,
+                end = PlayTorrioTheme.spacing.xxxl,
+                top = PlayTorrioTheme.spacing.md,
+                bottom = PlayTorrioTheme.spacing.xs
+            ),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(PlayTorrioTheme.spacing.sm)
+    ) {
+        Text(
+            text = stringResource(R.string.cast_detail_filmography),
+            style = MaterialTheme.typography.titleLarge.copy(
+                fontWeight = FontWeight.SemiBold
+            ),
+            color = PlayTorrioTheme.colors.TextPrimary,
+            modifier = Modifier.padding(end = PlayTorrioTheme.spacing.sm)
+        )
+
+        FilterChipButton(
+            text = "All ($allCount)",
+            isSelected = selectedFilter == CastCreditFilter.ALL,
+            onClick = { onFilterSelected(CastCreditFilter.ALL) }
+        )
+
+        if (moviesCount > 0) {
+            FilterChipButton(
+                text = "Movies ($moviesCount)",
+                isSelected = selectedFilter == CastCreditFilter.MOVIES,
+                onClick = { onFilterSelected(CastCreditFilter.MOVIES) }
+            )
+        }
+
+        if (tvCount > 0) {
+            FilterChipButton(
+                text = "TV Shows ($tvCount)",
+                isSelected = selectedFilter == CastCreditFilter.TV_SHOWS,
+                onClick = { onFilterSelected(CastCreditFilter.TV_SHOWS) }
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun FilterChipButton(
+    text: String,
+    isSelected: Boolean,
+    onClick: () -> Unit
+) {
+    Button(
+        onClick = onClick,
+        colors = ButtonDefaults.colors(
+            containerColor = if (isSelected) PlayTorrioTheme.colors.Secondary.copy(alpha = 0.25f)
+                else PlayTorrioTheme.colors.SurfaceVariant.copy(alpha = 0.5f),
+            focusedContainerColor = PlayTorrioTheme.colors.Secondary,
+            contentColor = if (isSelected) PlayTorrioTheme.colors.Secondary
+                else PlayTorrioTheme.colors.TextSecondary,
+            focusedContentColor = PlayTorrioTheme.colors.OnSecondary
+        ),
+        border = ButtonDefaults.border(
+            border = if (isSelected) Border(border = BorderStroke(1.dp, PlayTorrioTheme.colors.Secondary), shape = RoundedCornerShape(20.dp))
+                else Border.None,
+            focusedBorder = Border(border = BorderStroke(2.dp, Color.White), shape = RoundedCornerShape(20.dp))
+        ),
+        shape = ButtonDefaults.shape(RoundedCornerShape(20.dp)),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium)
+        )
+    }
+}
+
+@Composable
+private fun FullScreenPhotoViewer(
+    photos: List<String>,
+    initialIndex: Int,
+    onDismiss: () -> Unit
+) {
+    var currentIndex by rememberSaveable(photos) { mutableIntStateOf(initialIndex.coerceIn(0, photos.lastIndex)) }
+    val focusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(Unit) {
+        focusRequester.requestFocusAfterFrames()
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xF0050811))
+            .focusRequester(focusRequester)
+            .focusable()
+            .onPreviewKeyEvent { event ->
+                if (event.type == KeyEventType.KeyDown) {
+                    when (event.key) {
+                        Key.DirectionLeft -> {
+                            currentIndex = (currentIndex - 1 + photos.size) % photos.size
+                            true
+                        }
+                        Key.DirectionRight -> {
+                            currentIndex = (currentIndex + 1) % photos.size
+                            true
+                        }
+                        Key.Back, Key.Escape -> {
+                            onDismiss()
+                            true
+                        }
+                        else -> false
+                    }
+                } else false
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        if (photos.isNotEmpty() && currentIndex in photos.indices) {
+            AsyncImage(
+                model = ImageRequest.Builder(LocalContext.current)
+                    .data(photos[currentIndex])
+                    .crossfade(true)
+                    .build(),
+                contentDescription = "Photo ${currentIndex + 1}",
+                modifier = Modifier
+                    .fillMaxHeight(0.88f)
+                    .fillMaxWidth(0.85f)
+                    .clip(RoundedCornerShape(16.dp)),
+                contentScale = ContentScale.Fit
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(32.dp)
+                .background(Color(0x80000000), RoundedCornerShape(8.dp))
+                .padding(horizontal = 14.dp, vertical = 8.dp)
+        ) {
+            Text(
+                text = "${currentIndex + 1} / ${photos.size}",
+                color = Color.White,
+                style = MaterialTheme.typography.labelMedium
+            )
+        }
+
+        Text(
+            text = "◀ Left / Right ▶ to navigate · Back to close",
+            color = Color(0x99FFFFFF),
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 24.dp)
+        )
     }
 }
 

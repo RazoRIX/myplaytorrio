@@ -1881,7 +1881,10 @@ private fun MetaDetailsContent(
                             initialHeroFocusRequested = true
                             clearPendingRestore()
                         },
-                        onShowFullDescription = { showSynopsisOverlay = true }
+                        onShowFullDescription = { showSynopsisOverlay = true },
+                        onEntityClick = { kind, id, name ->
+                            onNavigateToTmdbEntityBrowse(kind, id, name, meta.apiType)
+                        }
                     )
                 }
             }
@@ -2017,13 +2020,14 @@ private fun MetaDetailsContent(
                                         clearPendingRestore()
                                     },
                                     onCastMemberClick = { member ->
-                                        member.tmdbId?.let { id ->
+                                        val id = member.tmdbId ?: 0
+                                        if (id > 0) {
                                             markCastMemberRestore(id)
-                                            val preferCrew = member.character.equals("Creator", ignoreCase = true) ||
-                                                member.character.equals("Director", ignoreCase = true) ||
-                                                member.character.equals("Writer", ignoreCase = true)
-                                            onNavigateToCastDetail(id, member.name, preferCrew)
                                         }
+                                        val preferCrew = member.character.equals("Creator", ignoreCase = true) ||
+                                            member.character.equals("Director", ignoreCase = true) ||
+                                            member.character.equals("Writer", ignoreCase = true)
+                                        onNavigateToCastDetail(id, member.name, preferCrew)
                                     },
                                     modifier = Modifier.onSizeChanged { castSectionHeightPx = it.height }
                                 )
@@ -2207,10 +2211,9 @@ private fun MetaDetailsContent(
                             restoreFocusToken = if (pendingRestoreType == RestoreTarget.COMPANY_OR_NETWORK) restoreFocusToken else 0,
                             onRestoreFocusHandled = { clearPendingRestore() },
                             onCompanyClick = { company ->
-                                company.tmdbId?.let { entityId ->
-                                    markCompanyRestore(entityId)
-                                    onNavigateToTmdbEntityBrowse("network", entityId, company.name, meta.apiType)
-                                }
+                                val entityId = company.tmdbId ?: 0
+                                if (entityId > 0) markCompanyRestore(entityId)
+                                onNavigateToTmdbEntityBrowse("network", entityId, company.name, meta.apiType)
                             }
                         )
                     }
@@ -2225,10 +2228,9 @@ private fun MetaDetailsContent(
                             restoreFocusToken = if (pendingRestoreType == RestoreTarget.COMPANY_OR_NETWORK) restoreFocusToken else 0,
                             onRestoreFocusHandled = { clearPendingRestore() },
                             onCompanyClick = { company ->
-                                company.tmdbId?.let { entityId ->
-                                    markCompanyRestore(entityId)
-                                    onNavigateToTmdbEntityBrowse("company", entityId, company.name, meta.apiType)
-                                }
+                                val entityId = company.tmdbId ?: 0
+                                if (entityId > 0) markCompanyRestore(entityId)
+                                onNavigateToTmdbEntityBrowse("company", entityId, company.name, meta.apiType)
                             }
                         )
                     }
@@ -2243,10 +2245,9 @@ private fun MetaDetailsContent(
                             restoreFocusToken = if (pendingRestoreType == RestoreTarget.COMPANY_OR_NETWORK) restoreFocusToken else 0,
                             onRestoreFocusHandled = { clearPendingRestore() },
                             onCompanyClick = { company ->
-                                company.tmdbId?.let { entityId ->
-                                    markCompanyRestore(entityId)
-                                    onNavigateToTmdbEntityBrowse("company", entityId, company.name, meta.apiType)
-                                }
+                                val entityId = company.tmdbId ?: 0
+                                if (entityId > 0) markCompanyRestore(entityId)
+                                onNavigateToTmdbEntityBrowse("company", entityId, company.name, meta.apiType)
                             }
                         )
                     }
@@ -2261,10 +2262,9 @@ private fun MetaDetailsContent(
                             restoreFocusToken = if (pendingRestoreType == RestoreTarget.COMPANY_OR_NETWORK) restoreFocusToken else 0,
                             onRestoreFocusHandled = { clearPendingRestore() },
                             onCompanyClick = { company ->
-                                company.tmdbId?.let { entityId ->
-                                    markCompanyRestore(entityId)
-                                    onNavigateToTmdbEntityBrowse("network", entityId, company.name, meta.apiType)
-                                }
+                                val entityId = company.tmdbId ?: 0
+                                if (entityId > 0) markCompanyRestore(entityId)
+                                onNavigateToTmdbEntityBrowse("network", entityId, company.name, meta.apiType)
                             }
                         )
                     }

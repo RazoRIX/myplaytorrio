@@ -15,12 +15,14 @@ import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.flow.first
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class PlayTorrioHttpScraperManager @Inject constructor(
-    private val livenessValidator: HttpStreamLivenessValidator
+    private val livenessValidator: HttpStreamLivenessValidator,
+    private val settingsDataStore: com.playtorrio.tv.data.local.PlayTorrioHttpSettingsDataStore
 ) {
     companion object {
         private const val TAG = "PlayTorrioHttpManager"
@@ -74,6 +76,8 @@ class PlayTorrioHttpScraperManager @Inject constructor(
         ZxcStreamScraper()
     )
 
+    val allScrapers: List<StreamScraper> get() = scrapers
+
     suspend fun scrapeStreams(
         type: String,
         title: String,
@@ -93,12 +97,23 @@ class PlayTorrioHttpScraperManager @Inject constructor(
             tmdbId = tmdbId
         )
 
-        Log.d(TAG, "Starting PlayTorrioHTTP scrape for '${request.title}' (type: ${request.type}, imdb: ${request.imdbId}, tmdb: ${request.tmdbId})")
+        val isEnabled = settingsDataStore.isHttpScrapingEnabled.first()
+        if (!isEnabled) {
+            Log.d(TAG, "PlayTorrioHTTP scraping is disabled in settings")
+            return@withContext emptyList<Stream>()
+        }
 
-        val tasks = scrapers.map { scraper ->
+        val disabledProviders = settingsDataStore.disabledProviders.first()
+        val activeScrapers = scrapers.filter { it.id !in disabledProviders }
+
+        Log.d(TAG, "Starting PlayTorrioHTTP scrape for '${request.title}' (${activeScrapers.size} active scrapers)")
+
+        val tasks = activeScrapers.map { scraper ->
             async {
                 try {
-                    scraper.scrape(request)
+                    scraper.scrape(request).map { res ->
+                        if (res.provider == null) res.copy(provider = scraper.id) else res
+                    }
                 } catch (e: Exception) {
                     Log.d(TAG, "Scraper ${scraper.javaClass.simpleName} error: ${e.message}")
                     emptyList<ScraperStreamResult>()
@@ -137,7 +152,8 @@ class PlayTorrioHttpScraperManager @Inject constructor(
                     ),
                     addonName = ADDON_NAME,
                     addonLogo = null,
-                    quality = res.quality
+                    quality = res.quality,
+                    provider = res.provider
                 )
             )
         }
@@ -176,16 +192,28 @@ class PlayTorrioHttpScraperManager @Inject constructor(
             tmdbId = tmdbId
         )
 
-        Log.d(TAG, "Starting dynamic PlayTorrioHTTP scrape for '${request.title}' (type: ${request.type}, imdb: ${request.imdbId}, tmdb: ${request.tmdbId})")
+        val isEnabled = settingsDataStore.isHttpScrapingEnabled.first()
+        if (!isEnabled) {
+            Log.d(TAG, "PlayTorrioHTTP scraping is disabled in settings")
+            return@withContext
+        }
+
+        val disabledProviders = settingsDataStore.disabledProviders.first()
+        val activeScrapers = scrapers.filter { it.id !in disabledProviders }
+
+        Log.d(TAG, "Starting dynamic PlayTorrioHTTP scrape for '${request.title}' (${activeScrapers.size} active scrapers)")
 
         val seenUrls = java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
-        val jobs = scrapers.map { scraper ->
+        val jobs = activeScrapers.map { scraper ->
             launch {
                 try {
-                    val results = withTimeoutOrNull(10000L) {
+                    val rawResults = withTimeoutOrNull(10000L) {
                         scraper.scrape(request)
                     } ?: emptyList()
+                    val results = rawResults.map { res ->
+                        if (res.provider == null) res.copy(provider = scraper.id) else res
+                    }
                     if (results.isNotEmpty()) {
                         val streams = mutableListOf<Stream>()
                         for (res in results) {
@@ -215,7 +243,8 @@ class PlayTorrioHttpScraperManager @Inject constructor(
                                     ),
                                     addonName = ADDON_NAME,
                                     addonLogo = null,
-                                    quality = res.quality
+                                    quality = res.quality,
+                                    provider = res.provider
                                 )
                             )
                         }

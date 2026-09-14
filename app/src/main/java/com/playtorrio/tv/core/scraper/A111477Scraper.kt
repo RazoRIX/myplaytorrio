@@ -10,6 +10,8 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 class A111477Scraper : StreamScraper {
+    override val id: String = "111477"
+    override val displayName: String = "111477"
     override val name: String = "PlayTorrioHTTP"
 
     companion object {
@@ -115,7 +117,8 @@ class A111477Scraper : StreamScraper {
                                         title = if (rawTitle.isNotBlank()) rawTitle else rawName,
                                         description = "111477 • Direct CDN Stream",
                                         url = url,
-                                        headers = headers
+                                        headers = headers,
+                                        provider = "111477"
                                     )
                                 )
                             }

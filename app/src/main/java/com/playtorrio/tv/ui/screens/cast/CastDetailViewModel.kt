@@ -16,6 +16,12 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+enum class CastCreditFilter {
+    ALL,
+    MOVIES,
+    TV_SHOWS
+}
+
 @HiltViewModel
 class CastDetailViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -28,7 +34,8 @@ class CastDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
-    val personId: Int = savedStateHandle.get<String>("personId")?.toIntOrNull() ?: 0
+    var personId: Int = savedStateHandle.get<String>("personId")?.toIntOrNull() ?: 0
+        private set
     val personName: String = (savedStateHandle.get<String>("personName") ?: "").let { raw ->
         runCatching { java.net.URLDecoder.decode(raw, "UTF-8") }.getOrDefault(raw)
     }
@@ -36,6 +43,9 @@ class CastDetailViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow<CastDetailUiState>(CastDetailUiState.Loading)
     val uiState: StateFlow<CastDetailUiState> = _uiState.asStateFlow()
+
+    private val _selectedFilter = MutableStateFlow(CastCreditFilter.ALL)
+    val selectedFilter: StateFlow<CastCreditFilter> = _selectedFilter.asStateFlow()
 
     private val _watchedMovieIds = MutableStateFlow<Set<String>>(emptySet())
     val watchedMovieIds: StateFlow<Set<String>> = _watchedMovieIds.asStateFlow()
@@ -54,6 +64,10 @@ class CastDetailViewModel @Inject constructor(
         }
     }
 
+    fun setFilter(filter: CastCreditFilter) {
+        _selectedFilter.value = filter
+    }
+
     private fun observeWatchedStatus() {
         viewModelScope.launch {
             watchProgressRepository.observeWatchedMovieIds()
@@ -69,8 +83,24 @@ class CastDetailViewModel @Inject constructor(
     private fun loadPersonDetail() {
         viewModelScope.launch {
             try {
+                var targetId = personId
+                if (targetId <= 0 && personName.isNotBlank()) {
+                    val resolved = tmdbMetadataService.resolvePersonIdByName(personName)
+                    if (resolved != null && resolved > 0) {
+                        targetId = resolved
+                        personId = resolved
+                    }
+                }
+
+                if (targetId <= 0) {
+                    _uiState.value = CastDetailUiState.Error(
+                        context.getString(R.string.cast_error_load_details_for, personName)
+                    )
+                    return@launch
+                }
+
                 val detail = tmdbMetadataService.fetchPersonDetail(
-                    personId = personId,
+                    personId = targetId,
                     preferCrewCredits = preferCrew,
                     language = tmdbSettingsDataStore.settings.first().language
                 )

@@ -54,6 +54,7 @@ class PluginDataStore @Inject constructor(
     private val pluginsEnabledKey = booleanPreferencesKey("plugins_enabled")
     private val groupStreamsByRepositoryKey = booleanPreferencesKey("group_streams_by_repository")
     private val scraperSettingsKey = stringPreferencesKey("scraper_settings")
+    private val bundledPhisherInstalledKey = booleanPreferencesKey("bundled_phisher_installed")
 
     private val repoListType = Types.newParameterizedType(List::class.java, PluginRepository::class.java)
     private val scraperListType = Types.newParameterizedType(List::class.java, ScraperInfo::class.java)
@@ -186,6 +187,20 @@ class PluginDataStore @Inject constructor(
             if (active != null && !active.isPrimary && active.usesPrimaryPlugins) return
         store().edit { prefs ->
             prefs[groupStreamsByRepositoryKey] = enabled
+        }
+    }
+
+    val bundledPhisherInstalled: Flow<Boolean> = effectiveProfileIdFlow.flatMapLatest { pid ->
+        factory.get(pid, FEATURE).data.map { prefs ->
+            prefs[bundledPhisherInstalledKey] ?: false
+        }
+    }
+
+    suspend fun setBundledPhisherInstalled(installed: Boolean) {
+        val active = profileManager.activeProfile
+        if (active != null && !active.isPrimary && active.usesPrimaryPlugins) return
+        store().edit { prefs ->
+            prefs[bundledPhisherInstalledKey] = installed
         }
     }
 

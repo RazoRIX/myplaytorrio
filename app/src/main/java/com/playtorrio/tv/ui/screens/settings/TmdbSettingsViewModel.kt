@@ -37,7 +37,12 @@ class TmdbSettingsViewModel @Inject constructor(
 
     fun onEvent(event: TmdbSettingsEvent) {
         when (event) {
-            is TmdbSettingsEvent.ToggleEnabled -> update { dataStore.setEnabled(event.enabled) }
+            is TmdbSettingsEvent.ToggleEnabled -> update {
+                dataStore.setEnabled(event.enabled)
+                metaRepository.clearCache()
+                cwEnrichmentCache.clearAll()
+                trailerService.clearCache()
+            }
             is TmdbSettingsEvent.ToggleModernHomeEnabled -> {
                 update { dataStore.setModernHomeEnabled(event.enabled) }
             }

@@ -305,6 +305,9 @@ internal fun PlayerRuntimeController.attemptAutoRetry(
 internal fun PlayerRuntimeController.resetErrorRetryState() {
     startupRetryCount = 0
     errorRetryCount = 0
+    timeoutRecoveryAttempts = 0
+    liveReconnectAttempts = 0
+    isLiveReconnecting = false
     parsingErrorProbeAttempted = false
     pendingAudioPcmFallbackRebuild = false
     errorRetryJob?.cancel()

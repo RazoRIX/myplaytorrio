@@ -57,6 +57,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.animation.core.AnimationSpec
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -158,6 +164,21 @@ fun TmdbEntityBrowseScreen(
                 onNavigateToDetail(id, type, addonBaseUrl.takeIf { it.isNotBlank() })
             }
         )
+
+        // Floating Back Button for Touch/Mobile Users
+        IconButton(
+            onClick = onBackPress,
+            modifier = Modifier
+                .padding(start = 16.dp, top = 16.dp)
+                .size(40.dp)
+                .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+        ) {
+            Icon(
+                imageVector = Icons.Default.ArrowBack,
+                contentDescription = "Back",
+                tint = Color.White
+            )
+        }
     }
 }
 

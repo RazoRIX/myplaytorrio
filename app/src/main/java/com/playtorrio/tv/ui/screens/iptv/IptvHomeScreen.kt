@@ -1,11 +1,18 @@
 package com.playtorrio.tv.ui.screens.iptv
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,11 +25,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.FeaturedPlayList
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -32,6 +39,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -40,7 +48,58 @@ import androidx.compose.ui.unit.sp
 import com.playtorrio.tv.core.iptv.channels.HardcodedChannel
 import com.playtorrio.tv.core.iptv.channels.HardcodedChannels
 import com.playtorrio.tv.core.iptv.context.IptvChannelContextHolder
-import com.playtorrio.tv.core.iptv.model.ChannelHit
+import com.playtorrio.tv.core.iptv.model.CatalogSource
+import com.playtorrio.tv.core.iptv.model.M3uPlaylist
+
+@Composable
+fun IptvActionButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    containerColor: Color,
+    focusedContainerColor: Color = containerColor.copy(alpha = 0.85f),
+    contentColor: Color = Color.White,
+    focusedBorderColor: Color = Color(0xFF38BDF8),
+    content: @Composable RowScope.() -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isFocused by interactionSource.collectIsFocusedAsState()
+    val isHovered by interactionSource.collectIsHoveredAsState()
+    val isHighlighted = (isFocused || isHovered) && enabled
+
+    val scale by animateFloatAsState(
+        targetValue = if (isHighlighted) 1.06f else 1.0f,
+        label = "btn_scale"
+    )
+    val bgColor by animateColorAsState(
+        targetValue = if (isHighlighted) focusedContainerColor else containerColor,
+        label = "btn_bg"
+    )
+
+    Surface(
+        onClick = onClick,
+        enabled = enabled,
+        interactionSource = interactionSource,
+        shape = RoundedCornerShape(8.dp),
+        color = bgColor,
+        contentColor = contentColor,
+        border = BorderStroke(
+            width = if (isHighlighted) 2.dp else 1.dp,
+            color = if (isHighlighted) focusedBorderColor else Color(0x22FFFFFF)
+        ),
+        modifier = modifier
+            .scale(scale)
+            .height(38.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            content()
+        }
+    }
+}
 
 @Composable
 fun IptvHomeScreen(
@@ -52,8 +111,27 @@ fun IptvHomeScreen(
     val statusText by viewModel.statusText.collectAsState()
     val verifiedPortals by viewModel.verifiedPortals.collectAsState()
     val canGetMore by viewModel.canGetMore.collectAsState()
+    val scrapeSource by viewModel.scrapeSource.collectAsState()
+    val quickChannels by viewModel.quickChannels.collectAsState()
+    val m3uPlaylists by viewModel.m3uPlaylists.collectAsState()
 
     var selectedChannelForSources by remember { mutableStateOf<HardcodedChannel?>(null) }
+    var showQuickChannelDialog by remember { mutableStateOf(false) }
+    var showM3uDialog by remember { mutableStateOf(false) }
+    var selectedM3uForBrowsing by remember { mutableStateOf<M3uPlaylist?>(null) }
+
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                viewModel.refreshPortalsFromStorage()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     val featuredChannels = remember {
         listOfNotNull(
@@ -62,20 +140,9 @@ fun IptvHomeScreen(
             HardcodedChannels.byId("espn_plus"),
             HardcodedChannels.byId("f1"),
             HardcodedChannels.byId("nba"),
-            HardcodedChannels.byId("bein_sports")
+            HardcodedChannels.byId("bein_1")
         )
     }
-
-    val combatChannels = remember { HardcodedChannels.byCategory("Combat") }
-    val premierChannels = remember { HardcodedChannels.byCategory("Premier") }
-    val usSportsChannels = remember { HardcodedChannels.byCategory("US Sports") }
-    val soccerChannels = remember { HardcodedChannels.byCategory("Soccer") }
-    val racingChannels = remember { HardcodedChannels.byCategory("Racing") }
-    val movieChannels = remember { HardcodedChannels.byCategory("Movies") }
-    val newsChannels = remember { HardcodedChannels.byCategory("News") }
-    val arabicChannels = remember { HardcodedChannels.byCategory("Arabic") }
-    val discoveryChannels = remember { HardcodedChannels.byCategory("Discovery") }
-    val kidsChannels = remember { HardcodedChannels.byCategory("Kids") }
 
     Box(
         modifier = Modifier
@@ -121,25 +188,59 @@ fun IptvHomeScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Button(
+                        // Portals Manager Button
+                        IptvActionButton(
                             onClick = onOpenPortals,
-                            modifier = Modifier.height(38.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B)),
-                            shape = RoundedCornerShape(8.dp)
+                            containerColor = Color(0xFF1E293B),
+                            focusedBorderColor = Color(0xFF38BDF8)
                         ) {
                             Icon(imageVector = Icons.Default.Dns, contentDescription = null, modifier = Modifier.size(15.dp))
                             Spacer(modifier = Modifier.width(6.dp))
                             Text("Portals (${verifiedPortals.size})", fontSize = 12.sp, maxLines = 1)
                         }
 
+                        // M3U Playlists Button
+                        IptvActionButton(
+                            onClick = { showM3uDialog = true },
+                            containerColor = Color(0xFF0F231D),
+                            focusedContainerColor = Color(0xFF14382C),
+                            contentColor = Color(0xFF10B981),
+                            focusedBorderColor = Color(0xFF10B981)
+                        ) {
+                            Icon(imageVector = Icons.Default.FeaturedPlayList, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("M3U (${m3uPlaylists.size})", color = Color(0xFF10B981), fontSize = 12.sp, maxLines = 1)
+                        }
+
+                        // Add Quick Channel Button
+                        IptvActionButton(
+                            onClick = { showQuickChannelDialog = true },
+                            containerColor = Color(0xFF312E81),
+                            focusedContainerColor = Color(0xFF3730A3),
+                            contentColor = Color(0xFFA5B4FC),
+                            focusedBorderColor = Color(0xFFA5B4FC)
+                        ) {
+                            Icon(imageVector = Icons.Default.Add, contentDescription = null, tint = Color(0xFFA5B4FC), modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("+ Quick", color = Color(0xFFA5B4FC), fontSize = 12.sp, maxLines = 1)
+                        }
+
+                        // Source Switcher
+                        IptvActionButton(
+                            onClick = { viewModel.toggleScrapeSource() },
+                            enabled = !isScraping,
+                            containerColor = if (scrapeSource == CatalogSource.CLOUD_VAULT) Color(0xFF4338CA) else Color(0xFFC2410C),
+                            focusedBorderColor = if (scrapeSource == CatalogSource.CLOUD_VAULT) Color(0xFF818CF8) else Color(0xFFFB923C)
+                        ) {
+                            Text(scrapeSource.label, fontSize = 11.sp, maxLines = 1)
+                        }
+
+                        // Get More Button
                         if (canGetMore && !isScraping) {
-                            Button(
+                            IptvActionButton(
                                 onClick = { viewModel.getMorePortals() },
-                                modifier = Modifier.height(38.dp),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF059669)),
-                                shape = RoundedCornerShape(8.dp)
+                                containerColor = Color(0xFF059669),
+                                focusedBorderColor = Color(0xFF34D399)
                             ) {
                                 Icon(imageVector = Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
@@ -147,13 +248,12 @@ fun IptvHomeScreen(
                             }
                         }
 
-                        Button(
+                        // Scrape Button
+                        IptvActionButton(
                             onClick = { viewModel.scrapePortals(reset = true) },
-                            modifier = Modifier.height(38.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
                             enabled = !isScraping,
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
-                            shape = RoundedCornerShape(8.dp)
+                            containerColor = Color(0xFF0284C7),
+                            focusedBorderColor = Color(0xFF38BDF8)
                         ) {
                             if (isScraping) {
                                 CircularProgressIndicator(modifier = Modifier.size(14.dp), color = Color.White, strokeWidth = 2.dp)
@@ -182,125 +282,58 @@ fun IptvHomeScreen(
                 )
             }
 
-            // 2. Curated Slider Sections
-            item {
-                IptvCategoryRow(
-                    title = "Combat & Martial Arts",
-                    subtitle = "UFC Fight Pass, WWE, AEW, World Boxing & PPV",
-                    channels = combatChannels,
-                    onChannelClick = { channel ->
-                        viewModel.openChannel(channel)
-                        selectedChannelForSources = channel
-                    }
-                )
+            // 2. Quick Channels Rail (Custom shortcuts)
+            if (quickChannels.isNotEmpty()) {
+                item(key = "quick_channels_row") {
+                    QuickChannelsRow(
+                        channels = quickChannels,
+                        onChannelClick = { quick ->
+                            viewModel.openQuickChannel(quick)
+                            selectedChannelForSources = HardcodedChannel(
+                                id = quick.id,
+                                name = quick.name,
+                                short = quick.short,
+                                category = quick.category,
+                                keywords = quick.keywords,
+                                gradient = quick.gradient,
+                                iconUrl = quick.iconUrl
+                            )
+                        },
+                        onAddClick = { showQuickChannelDialog = true },
+                        onDeleteClick = { quick -> viewModel.removeQuickChannel(quick.id) }
+                    )
+                }
             }
 
-            item {
-                IptvCategoryRow(
-                    title = "ESPN & College Basketball (NCAA)",
-                    subtitle = "ESPN+, ESPN, ESPN2, ESPNU, NCAA Men's & Women's CBB, SEC & ACC",
-                    channels = premierChannels,
-                    onChannelClick = { channel ->
-                        viewModel.openChannel(channel)
-                        selectedChannelForSources = channel
-                    }
-                )
+            // 3. M3U Playlists Rail (Custom playlists)
+            if (m3uPlaylists.isNotEmpty()) {
+                item(key = "m3u_playlists_row") {
+                    M3uPlaylistsRow(
+                        playlists = m3uPlaylists,
+                        onPlaylistClick = { playlist -> selectedM3uForBrowsing = playlist },
+                        onManageClick = { showM3uDialog = true }
+                    )
+                }
             }
 
-            item {
-                IptvCategoryRow(
-                    title = "US Major Leagues & Sports",
-                    subtitle = "NBA TV, NFL Network, RedZone, MLB, NHL, Fox Sports & CBS Sports",
-                    channels = usSportsChannels,
-                    onChannelClick = { channel ->
-                        viewModel.openChannel(channel)
-                        selectedChannelForSources = channel
-                    }
-                )
-            }
-
-            item {
-                IptvCategoryRow(
-                    title = "Global Football & Soccer",
-                    subtitle = "UEFA Champions League, Premier League, beIN Sports, TNT Sports",
-                    channels = soccerChannels,
-                    onChannelClick = { channel ->
-                        viewModel.openChannel(channel)
-                        selectedChannelForSources = channel
-                    }
-                )
-            }
-
-            item {
-                IptvCategoryRow(
-                    title = "Motorsport & Racing",
-                    subtitle = "Formula 1, MotoGP, NASCAR Cup, IndyCar",
-                    channels = racingChannels,
-                    onChannelClick = { channel ->
-                        viewModel.openChannel(channel)
-                        selectedChannelForSources = channel
-                    }
-                )
-            }
-
-            item {
-                IptvCategoryRow(
-                    title = "Movies & Premium Networks",
-                    subtitle = "HBO, Showtime, Starz, Cinemax",
-                    channels = movieChannels,
-                    onChannelClick = { channel ->
-                        viewModel.openChannel(channel)
-                        selectedChannelForSources = channel
-                    }
-                )
-            }
-
-            item {
-                IptvCategoryRow(
-                    title = "24/7 Global News Networks",
-                    subtitle = "CNN, BBC World, Fox News, Sky News, Al Jazeera",
-                    channels = newsChannels,
-                    onChannelClick = { channel ->
-                        viewModel.openChannel(channel)
-                        selectedChannelForSources = channel
-                    }
-                )
-            }
-
-            item {
-                IptvCategoryRow(
-                    title = "Arabic & Regional Hub",
-                    subtitle = "beIN Sports Premium, SSC Sports, MBC",
-                    channels = arabicChannels,
-                    onChannelClick = { channel ->
-                        viewModel.openChannel(channel)
-                        selectedChannelForSources = channel
-                    }
-                )
-            }
-
-            item {
-                IptvCategoryRow(
-                    title = "Discovery & Documentaries",
-                    subtitle = "National Geographic, Discovery Channel",
-                    channels = discoveryChannels,
-                    onChannelClick = { channel ->
-                        viewModel.openChannel(channel)
-                        selectedChannelForSources = channel
-                    }
-                )
-            }
-
-            item {
-                IptvCategoryRow(
-                    title = "Kids & Family",
-                    subtitle = "Cartoon Network, Disney Channel",
-                    channels = kidsChannels,
-                    onChannelClick = { channel ->
-                        viewModel.openChannel(channel)
-                        selectedChannelForSources = channel
-                    }
-                )
+            // 4. Curated Slider Sections (All 14 categories from HardcodedChannels)
+            items(
+                count = HardcodedChannels.categories.size,
+                key = { idx -> "cat_${HardcodedChannels.categories[idx]}" }
+            ) { idx ->
+                val cat = HardcodedChannels.categories[idx]
+                val channels = remember(cat) { HardcodedChannels.byCategory(cat) }
+                if (channels.isNotEmpty()) {
+                    IptvCategoryRow(
+                        title = HardcodedChannels.getCategoryDisplayTitle(cat),
+                        subtitle = HardcodedChannels.getCategorySubtitle(cat),
+                        channels = channels,
+                        onChannelClick = { channel ->
+                            viewModel.openChannel(channel)
+                            selectedChannelForSources = channel
+                        }
+                    )
+                }
             }
         }
 
@@ -313,10 +346,47 @@ fun IptvHomeScreen(
                 onPlayHit = { hit ->
                     selectedChannelForSources = null
                     IptvChannelContextHolder.setHardcodedContext(
-                        currentChannelId = channel.id,
+                        channel = channel,
+                        hits = viewModel.channelHits.value,
+                        currentStreamUrl = hit.streamUrl,
                         allChannels = HardcodedChannels.all
                     )
                     onPlayStream(hit.streamUrl, "${channel.name} (${hit.portal.name})")
+                }
+            )
+        }
+
+        // Quick Channel Creator Dialog
+        if (showQuickChannelDialog) {
+            IptvQuickChannelDialog(
+                onDismiss = { showQuickChannelDialog = false },
+                onAddChannel = { name, query, icon, color ->
+                    viewModel.addQuickChannel(name, query, icon, color)
+                }
+            )
+        }
+
+        // M3U Manager Dialog
+        if (showM3uDialog) {
+            IptvM3uDialog(
+                viewModel = viewModel,
+                onDismiss = { showM3uDialog = false },
+                onBrowsePlaylist = { playlist ->
+                    showM3uDialog = false
+                    selectedM3uForBrowsing = playlist
+                }
+            )
+        }
+
+        // M3U Channel Browser Dialog
+        selectedM3uForBrowsing?.let { playlist ->
+            IptvM3uBrowserDialog(
+                viewModel = viewModel,
+                playlist = playlist,
+                onDismiss = { selectedM3uForBrowsing = null },
+                onPlayChannel = { url, title ->
+                    selectedM3uForBrowsing = null
+                    onPlayStream(url, title)
                 }
             )
         }

@@ -2,17 +2,21 @@ package com.playtorrio.tv.core.iptv.storage
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.compose.ui.graphics.Color
 import com.playtorrio.tv.core.iptv.model.CatalogSource
 import com.playtorrio.tv.core.iptv.model.ChannelHit
 import com.playtorrio.tv.core.iptv.model.IptvPortal
 import com.playtorrio.tv.core.iptv.model.IptvStream
+import com.playtorrio.tv.core.iptv.model.M3uChannel
 import com.playtorrio.tv.core.iptv.model.M3uPlaylist
+import com.playtorrio.tv.core.iptv.model.QuickChannel
 import com.playtorrio.tv.core.iptv.model.VerifiedPortal
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -229,6 +233,45 @@ class IptvStorage @Inject constructor(
         prefs.edit().remove("pt_iptv_ch_$channelId").apply()
     }
 
+    suspend fun removeHitsForPortals(portalKeys: Set<String>) = withContext(Dispatchers.IO) {
+        if (portalKeys.isEmpty()) return@withContext
+        val allKeys = prefs.all.keys.filter { it.startsWith("pt_iptv_ch_") }
+        val editor = prefs.edit()
+        for (k in allKeys) {
+            val raw = prefs.getString(k, null) ?: continue
+            try {
+                val arr = JSONArray(raw)
+                val newArr = JSONArray()
+                var changed = false
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val pu = o.optString("pu")
+                    val uu = o.optString("uu")
+                    val pp = o.optString("pp")
+                    val key = "$pu|$uu"
+                    val credKey = "$pu|$uu|$pp"
+                    if (portalKeys.contains(key) || portalKeys.contains(credKey)) {
+                        changed = true
+                    } else {
+                        newArr.put(o)
+                    }
+                }
+                if (changed) {
+                    if (newArr.length() == 0) {
+                        editor.remove(k)
+                    } else {
+                        editor.putString(k, newArr.toString())
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+        editor.apply()
+    }
+
+    suspend fun removeAliveCache(portalKey: String) = withContext(Dispatchers.IO) {
+        prefs.edit().remove("pt_iptv_alive_$portalKey").apply()
+    }
+
     // ── Channel Favorited URLs ──
 
     suspend fun loadChannelFavorites(channelId: String): Set<String> = withContext(Dispatchers.IO) {
@@ -252,8 +295,8 @@ class IptvStorage @Inject constructor(
                     M3uPlaylist(
                         id = o.optString("id"),
                         name = o.optString("name"),
-                        url = o.optString("url"),
-                        count = o.optInt("count", 0),
+                        sourceUrl = o.optString("url").takeIf { it.isNotEmpty() },
+                        cachedCount = o.optInt("count", 0),
                         addedAt = o.optLong("addedAt", System.currentTimeMillis())
                     )
                 )
@@ -292,5 +335,113 @@ class IptvStorage @Inject constructor(
 
     fun saveScrapeSource(source: CatalogSource) {
         prefs.edit().putString(KEY_SCRAPE_SOURCE, source.name).apply()
+    }
+
+    // ── Quick Channels Store ──
+
+    suspend fun loadQuickChannels(): List<QuickChannel> = withContext(Dispatchers.IO) {
+        val raw = prefs.getString("pt_iptv_quick_channels", null) ?: return@withContext emptyList()
+        try {
+            val arr = JSONArray(raw)
+            val list = mutableListOf<QuickChannel>()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val kws = mutableListOf<String>()
+                val kwArr = o.optJSONArray("keywords")
+                if (kwArr != null) {
+                    for (k in 0 until kwArr.length()) kws.add(kwArr.getString(k))
+                }
+                val grads = mutableListOf<Color>()
+                val gradArr = o.optJSONArray("gradient")
+                if (gradArr != null) {
+                    for (g in 0 until gradArr.length()) {
+                        val hex = gradArr.getString(g).removePrefix("#")
+                        grads.add(Color(hex.toLong(16)))
+                    }
+                }
+                list.add(
+                    QuickChannel(
+                        id = o.optString("id"),
+                        name = o.optString("name"),
+                        short = o.optString("short"),
+                        category = o.optString("category", "Quick"),
+                        keywords = kws,
+                        gradient = grads.ifEmpty { listOf(Color(0xFF6B7280), Color(0xFF1F2937)) },
+                        iconUrl = o.optString("iconUrl").takeIf { it.isNotBlank() }
+                    )
+                )
+            }
+            list
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    suspend fun saveQuickChannels(channels: List<QuickChannel>) = withContext(Dispatchers.IO) {
+        val arr = JSONArray()
+        for (c in channels) {
+            val o = JSONObject().apply {
+                put("id", c.id)
+                put("name", c.name)
+                put("short", c.short)
+                put("category", c.category)
+                put("keywords", JSONArray(c.keywords))
+                val hexGrads = c.gradient.map { String.format("#%08X", (it.value.toLong() and 0xFFFFFFFFL)) }
+                put("gradient", JSONArray(hexGrads))
+                put("iconUrl", c.iconUrl ?: "")
+            }
+            arr.put(o)
+        }
+        prefs.edit().putString("pt_iptv_quick_channels", arr.toString()).apply()
+    }
+
+    // ── M3U Channels File Store ──
+
+    suspend fun loadM3uPlaylistChannels(playlistId: String): List<M3uChannel> = withContext(Dispatchers.IO) {
+        val file = File(context.filesDir, "iptv_m3u_$playlistId.json")
+        if (!file.exists()) return@withContext emptyList()
+        try {
+            val raw = file.readText()
+            val arr = JSONArray(raw)
+            val list = mutableListOf<M3uChannel>()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                list.add(
+                    M3uChannel(
+                        name = o.optString("n"),
+                        url = o.optString("u"),
+                        logo = o.optString("l"),
+                        group = o.optString("g"),
+                        tvgId = o.optString("ti"),
+                        tvgName = o.optString("tn")
+                    )
+                )
+            }
+            list
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    suspend fun saveM3uPlaylistChannels(playlistId: String, channels: List<M3uChannel>) = withContext(Dispatchers.IO) {
+        val file = File(context.filesDir, "iptv_m3u_$playlistId.json")
+        val arr = JSONArray()
+        for (c in channels) {
+            val o = JSONObject().apply {
+                put("n", c.name)
+                put("u", c.url)
+                if (c.logo.isNotEmpty()) put("l", c.logo)
+                if (c.group.isNotEmpty()) put("g", c.group)
+                if (c.tvgId.isNotEmpty()) put("ti", c.tvgId)
+                if (c.tvgName.isNotEmpty()) put("tn", c.tvgName)
+            }
+            arr.put(o)
+        }
+        file.writeText(arr.toString())
+    }
+
+    suspend fun deleteM3uPlaylistFile(playlistId: String) = withContext(Dispatchers.IO) {
+        val file = File(context.filesDir, "iptv_m3u_$playlistId.json")
+        if (file.exists()) file.delete()
     }
 }

@@ -109,15 +109,17 @@ internal fun HomeViewModel.observeTmdbSettingsPipeline() {
             .collectLatest { settings ->
                 val languageChanged = currentTmdbSettings.language != settings.language
                 val releaseDatesChanged = currentTmdbSettings.useReleaseDates != settings.useReleaseDates
+                val enabledChanged = currentTmdbSettings.enabled != settings.enabled
                 currentTmdbSettings = settings
                 val tmdbEnabledForLayout = settings.enabled &&
                     (_uiState.value.homeLayout != HomeLayout.MODERN || settings.modernHomeEnabled)
                 val enrichEnabled = tmdbEnabledForLayout || externalMetaPrefetchEnabled
                 _uiState.update { it.copy(heroEnrichmentEnabled = enrichEnabled) }
-                if (languageChanged || releaseDatesChanged) {
+                if (languageChanged || releaseDatesChanged || enabledChanged) {
                     // Allow re-enrichment with the updated TMDB metadata selection on next focus.
                     prefetchedTmdbIds.clear()
                     prefetchedExternalMetaIds.clear()
+                    backgroundMetaPrefetchedIds.clear()
                     _enrichedPreviews.value = emptyMap()
                     _lastEnrichedPreview.value = null
                 }

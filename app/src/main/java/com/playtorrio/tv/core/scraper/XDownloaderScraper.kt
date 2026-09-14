@@ -70,11 +70,6 @@ class XDownloaderScraper : StreamScraper {
                     break
                 }
             }
-
-            if (matchedItemId == null) {
-                matchedItemId = items.getJSONObject(0).optString("id").ifEmpty { items.getJSONObject(0).optString("tmdbId") }
-            }
-
             if (matchedItemId.isNullOrBlank()) return@withContext emptyList()
 
             val detailsReq = Request.Builder()

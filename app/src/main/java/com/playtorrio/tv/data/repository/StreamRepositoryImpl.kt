@@ -25,6 +25,7 @@ import com.playtorrio.tv.domain.model.ScraperInfo
 import com.playtorrio.tv.domain.model.Stream
 import com.playtorrio.tv.domain.model.StreamBehaviorHints
 import com.playtorrio.tv.domain.model.enabledAddons
+import com.playtorrio.tv.domain.model.isBundledPhisher
 import com.playtorrio.tv.domain.repository.AddonRepository
 import com.playtorrio.tv.domain.repository.StreamRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -57,6 +58,7 @@ class StreamRepositoryImpl @Inject constructor(
     private val localDebridAvailabilityService: LocalDebridAvailabilityService,
     private val playTorrioHttpScraperManager: com.playtorrio.tv.core.scraper.PlayTorrioHttpScraperManager,
     private val playTorrioP2PScraperManager: com.playtorrio.tv.core.scraper.p2p.PlayTorrioP2PScraperManager,
+    private val playTorrioHttpSettingsDataStore: com.playtorrio.tv.data.local.PlayTorrioHttpSettingsDataStore,
     private val torrentSettings: TorrentSettings
 ) : StreamRepository {
     private val streamSearchSessions = StreamSearchSessionCache()
@@ -181,9 +183,29 @@ class StreamRepositoryImpl @Inject constructor(
         emit(NetworkResult.Loading)
 
         try {
-            // Filter addons that support streams for this type and id
+            val resolvedImdbId = if (videoId.startsWith("tt")) {
+                videoId.substringBefore(":")
+            } else {
+                val tmdbIdInt = videoId.substringBefore(":").toIntOrNull()
+                    ?: if (hasCompatiblePlugins) tmdbService.ensureTmdbId(videoId, type)?.toIntOrNull() else null
+                if (tmdbIdInt != null) tmdbService.tmdbToImdb(tmdbIdInt, type) else null
+            }
+
+            val imdbVideoId = if (resolvedImdbId != null) {
+                if (season != null && episode != null) {
+                    "$resolvedImdbId:$season:$episode"
+                } else if (videoId.contains(":")) {
+                    val parts = videoId.split(":")
+                    if (parts.size >= 3) "$resolvedImdbId:${parts[1]}:${parts[2]}" else resolvedImdbId
+                } else {
+                    resolvedImdbId
+                }
+            } else null
+
+            // Filter addons that support streams for this type and id (accepting either videoId or resolved imdbVideoId)
             val streamAddons = addons.filter { addon ->
-                addon.supportsStreamResource(type, videoId)
+                addon.supportsStreamResource(type, videoId) ||
+                    (imdbVideoId != null && addon.supportsStreamResource(type, imdbVideoId))
             }
 
             val attemptedAddonNames = streamAddons.map { it.displayName }
@@ -206,7 +228,14 @@ class StreamRepositoryImpl @Inject constructor(
                 streamAddons.forEach { addon ->
                     launch {
                         try {
-                            val streamsResult = getStreamsFromAddon(addon, type, videoId)
+                            val targetVideoId = if (addon.supportsStreamResource(type, videoId)) {
+                                videoId
+                            } else if (imdbVideoId != null && addon.supportsStreamResource(type, imdbVideoId)) {
+                                imdbVideoId
+                            } else {
+                                imdbVideoId ?: videoId
+                            }
+                            val streamsResult = getStreamsFromAddon(addon, type, targetVideoId)
                             when (streamsResult) {
                                 is NetworkResult.Success -> {
                                     if (streamsResult.data.isNotEmpty()) {
@@ -224,7 +253,7 @@ class StreamRepositoryImpl @Inject constructor(
                                         // Stream endpoint returned empty - try inline
                                         // streams from meta response as fallback.
                                         val inlineStreams = fetchInlineStreamsFromMeta(
-                                            addon, type, videoId
+                                            addon, type, targetVideoId
                                         )
                                         if (inlineStreams.isNotEmpty()) {
                                             resultChannel.send(
@@ -263,9 +292,8 @@ class StreamRepositoryImpl @Inject constructor(
                 // Launch PlayTorrioHTTP built-in scraper job
                 launch {
                     try {
-                        val tmdbIdStr = tmdbService.ensureTmdbId(videoId, type)
-                        val tmdbIdInt = tmdbIdStr?.toIntOrNull()
-                        val imdbId = if (videoId.startsWith("tt")) videoId.substringBefore(":") else null
+                        val imdbId = resolvedImdbId ?: if (videoId.startsWith("tt")) videoId.substringBefore(":") else null
+                        val tmdbIdInt = if (!videoId.startsWith("tt")) videoId.substringBefore(":").toIntOrNull() else null
                         val (pluginSeason, pluginEpisode) = resolvePluginSeasonEpisode(
                             videoId = videoId,
                             season = season,
@@ -317,9 +345,8 @@ class StreamRepositoryImpl @Inject constructor(
                 if (p2pEnabled) {
                     launch {
                         try {
-                            val tmdbIdStr = tmdbService.ensureTmdbId(videoId, type)
-                            val tmdbIdInt = tmdbIdStr?.toIntOrNull()
-                            val imdbId = if (videoId.startsWith("tt")) videoId.substringBefore(":") else null
+                            val imdbId = resolvedImdbId ?: if (videoId.startsWith("tt")) videoId.substringBefore(":") else null
+                            val tmdbIdInt = if (!videoId.startsWith("tt")) videoId.substringBefore(":").toIntOrNull() else null
                             val (pluginSeason, pluginEpisode) = resolvePluginSeasonEpisode(
                                 videoId = videoId,
                                 season = season,
@@ -524,16 +551,62 @@ class StreamRepositoryImpl @Inject constructor(
         result: AddonStreams,
         debridSettings: DebridSettings
     ) {
+        val isPlayTorrioHttp = result.addonName == com.playtorrio.tv.core.scraper.PlayTorrioHttpScraperManager.ADDON_NAME
         val existingIndex = accumulatedResults.indexOfFirst { it.addonName == result.addonName }
         if (existingIndex >= 0) {
             val existing = accumulatedResults[existingIndex]
+            val mergedStreams = mergeStreams(existing.streams, result.streams)
+            val sortedStreams = if (isPlayTorrioHttp) sortPlayTorrioHttpStreams(mergedStreams) else mergedStreams
             val merged = existing.copy(
-                streams = mergeStreams(existing.streams, result.streams)
+                streams = sortedStreams
             )
             accumulatedResults[existingIndex] = presentStreams(merged, debridSettings)
         } else {
-            accumulatedResults.add(presentStreams(result, debridSettings))
+            val sortedResult = if (isPlayTorrioHttp) {
+                result.copy(streams = sortPlayTorrioHttpStreams(result.streams))
+            } else {
+                result
+            }
+            accumulatedResults.add(presentStreams(sortedResult, debridSettings))
         }
+    }
+
+    internal suspend fun sortPlayTorrioHttpStreams(streams: List<Stream>): List<Stream> {
+        val order = playTorrioHttpSettingsDataStore.providerOrder.first()
+        if (order.isEmpty()) return streams
+        val rankMap = mutableMapOf<String, Int>()
+        order.forEachIndexed { index, providerId ->
+            rankMap[providerId] = index
+            if (providerId.equals("IStreamCDN", ignoreCase = true)) {
+                rankMap.putIfAbsent("IStreamFlare", index)
+            } else if (providerId.equals("IStreamFlare", ignoreCase = true)) {
+                rankMap.putIfAbsent("IStreamCDN", index)
+            }
+        }
+        return streams.sortedWith(
+            compareBy { stream ->
+                val rawProvider = stream.provider ?: extractProviderFallback(stream)
+                val provider = if (rawProvider.equals("IStreamFlare", ignoreCase = true)) "IStreamCDN" else rawProvider
+                rankMap[provider] ?: rankMap[rawProvider] ?: (order.size + 100)
+            }
+        )
+    }
+
+    internal fun extractProviderFallback(stream: Stream): String {
+        val text = (stream.title.orEmpty() + " " + stream.name.orEmpty() + " " + stream.description.orEmpty())
+        if (text.contains("111477", ignoreCase = true)) return "111477"
+        if (text.contains("IStreamCDN", ignoreCase = true) ||
+            text.contains("IStreamFlare", ignoreCase = true) ||
+            text.contains("istreamcdn", ignoreCase = true) ||
+            text.contains("IStream", ignoreCase = true)) return "IStreamCDN"
+        if (text.contains("Cinejoy", ignoreCase = true)) return "Cinejoy"
+        val match = Regex("\\[([a-zA-Z0-9_-]+)\\]").find(text)
+        if (match != null) {
+            val found = match.groupValues[1]
+            if (found.equals("IStreamFlare", ignoreCase = true)) return "IStreamCDN"
+            return found
+        }
+        return ""
     }
 
     private fun presentStreams(result: AddonStreams, debridSettings: DebridSettings): AddonStreams {
@@ -578,11 +651,8 @@ class StreamRepositoryImpl @Inject constructor(
 
         try {
             val groupByRepository = pluginManager.groupStreamsByRepository.first()
-            val repositoriesById = if (groupByRepository) {
-                pluginManager.repositories.first().associateBy { it.id }
-            } else {
-                emptyMap()
-            }
+            val repositoriesById = pluginManager.repositories.first().associateBy { it.id }
+            val disabledPlayTorrioProviders = playTorrioHttpSettingsDataStore.disabledProviders.first()
 
             // Collect streaming results from each scraper
             pluginManager.executeScrapersStreaming(
@@ -592,6 +662,16 @@ class StreamRepositoryImpl @Inject constructor(
                 episode = episode
             ).collect { (scraper, results) ->
                 if (results.isNotEmpty()) {
+                    val isBundled = scraper.isBundledPhisher(repositoriesById)
+                    val rawProviderName = scraper.name.removeSuffix("Provider")
+                    val providerName = if (rawProviderName.equals("IStreamFlare", ignoreCase = true)) "IStreamCDN" else rawProviderName
+                    val isProviderDisabled = providerName in disabledPlayTorrioProviders ||
+                        rawProviderName in disabledPlayTorrioProviders ||
+                        scraper.id in disabledPlayTorrioProviders
+                    if (isBundled && isProviderDisabled) {
+                        Log.d(TAG, "Skipping disabled PlayTorrioHTTP provider: $providerName")
+                        return@collect
+                    }
                     val addonName = scraper.pluginAddonName(groupByRepository, repositoriesById)
                     val addonStreams = AddonStreams(
                         addonName = addonName,
@@ -612,8 +692,12 @@ class StreamRepositoryImpl @Inject constructor(
         groupByRepository: Boolean,
         repositoriesById: Map<String, PluginRepository>
     ): String {
+        if (isBundledPhisher(repositoriesById)) {
+            return com.playtorrio.tv.core.scraper.PlayTorrioHttpScraperManager.ADDON_NAME
+        }
         if (!groupByRepository) return name
-        return repositoriesById[repositoryId]?.name?.takeIf { it.isNotBlank() } ?: name
+        val repo = repositoriesById[repositoryId]
+        return repo?.name?.takeIf { it.isNotBlank() } ?: name
     }
 
     private fun LocalScraperResult.toPluginStream(scraper: ScraperInfo, addonName: String): Stream {
@@ -621,13 +705,24 @@ class StreamRepositoryImpl @Inject constructor(
         val baseName = name?.takeIf { it.isNotBlank() }
         val quality = quality?.takeIf { it.isNotBlank() }
         val qualityLabel = quality ?: context.getString(com.playtorrio.tv.R.string.stream_quality_unknown)
+        val isPlayTorrioHttp = addonName == com.playtorrio.tv.core.scraper.PlayTorrioHttpScraperManager.ADDON_NAME
+        val rawProviderName = scraper.name.removeSuffix("Provider")
+        val providerName = if (isPlayTorrioHttp && rawProviderName.equals("IStreamFlare", ignoreCase = true)) "IStreamCDN" else rawProviderName
+
         val displayName = buildString {
+            if (isPlayTorrioHttp) {
+                append("[").append(providerName).append("] ")
+            }
             append(baseName ?: baseTitle ?: scraper.name)
             if (!toString().contains(qualityLabel)) {
                 append(" - ").append(qualityLabel)
             }
         }.takeIf { it.isNotBlank() }
-        val displayTitle = (baseTitle ?: baseName ?: scraper.name).takeIf { it.isNotBlank() }
+        val displayTitle = if (isPlayTorrioHttp) {
+            "[" + providerName + "] " + (baseTitle ?: baseName ?: scraper.name)
+        } else {
+            (baseTitle ?: baseName ?: scraper.name).takeIf { it.isNotBlank() }
+        }
 
         return Stream(
             name = displayName,
@@ -650,7 +745,8 @@ class StreamRepositoryImpl @Inject constructor(
             externalUrl = null,
             quality = quality,
             qualityValue = parseQualityValue(quality),
-            subtitles = subtitles
+            subtitles = subtitles,
+            provider = if (isPlayTorrioHttp) providerName else scraper.name
         )
     }
 

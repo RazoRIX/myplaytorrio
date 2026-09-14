@@ -589,6 +589,7 @@ class StartupSyncService @Inject constructor(
                         remotePlugins = remotePlugins,
                         removeMissingLocal = true
                     )
+                    pluginManager.ensureBundledPhisherRepository()
                     Log.d(TAG, "Pulled ${remotePlugins.size} plugin repos from remote for profile $profileId")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to pull plugins from remote, keeping local cache", e)

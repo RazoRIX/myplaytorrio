@@ -137,8 +137,8 @@ android {
         applicationId = "com.playtorrio.tv"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1055
-        versionName = "1.1.1"
+        versionCode = 1056
+        versionName = "1.1.2"
 
         buildConfigField("String", "PARENTAL_GUIDE_API_URL", buildConfigString(resolveProperty(devProperties, localProperties, "PARENTAL_GUIDE_API_URL", "")))
         buildConfigField("String", "INTRODB_API_URL", buildConfigString(resolveProperty(devProperties, localProperties, "INTRODB_API_URL", "")))

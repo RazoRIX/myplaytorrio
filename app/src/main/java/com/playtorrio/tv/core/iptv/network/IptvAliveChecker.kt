@@ -17,9 +17,15 @@ object IptvAliveChecker {
     private const val MAX_BYTES = 8 * 1024
     private const val CONCURRENCY = 20
 
+    private val dispatcher = okhttp3.Dispatcher().apply {
+        maxRequests = 128
+        maxRequestsPerHost = 32
+    }
+
     private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(2500, TimeUnit.MILLISECONDS)
-        .readTimeout(2500, TimeUnit.MILLISECONDS)
+        .dispatcher(dispatcher)
+        .connectTimeout(5000, TimeUnit.MILLISECONDS)
+        .readTimeout(5000, TimeUnit.MILLISECONDS)
         .followRedirects(true)
         .build()
 
@@ -86,10 +92,10 @@ object IptvAliveChecker {
 
                 if (ct.contains("mpegurl") || url.contains(".m3u8", ignoreCase = true)) {
                     val head = String(buf, 0, minOf(bytesRead, 1024), Charsets.UTF_8)
-                    return@withContext head.contains("#EXTM3U")
+                    return@withContext head.contains("#EXTM3U") || head.contains("#EXT-X") || head.contains("#EXTINF") || bytesRead > 0
                 }
 
-                if (bytesRead < MIN_BYTES) return@withContext false
+                if (bytesRead < MIN_BYTES) return@withContext bytesRead > 0 && (code == 200 || code == 206)
 
                 // Check MPEG-TS sync byte (0x47)
                 if (buf[0] == 0x47.toByte()) {
@@ -104,7 +110,7 @@ object IptvAliveChecker {
                         checkedPackets++
                         i += 188
                     }
-                    if (validTs && checkedPackets >= 3) return@withContext true
+                    if (validTs && checkedPackets >= 1) return@withContext true
                 }
 
                 // Check MP4 ftyp
@@ -112,6 +118,8 @@ object IptvAliveChecker {
                     val s = String(buf, 4, 4, Charsets.US_ASCII)
                     if (s == "ftyp") return@withContext true
                 }
+
+                return@withContext bytesRead > 0 && (ct.contains("video") || ct.contains("octet-stream") || ct.contains("audio"))
 
                 if (hasVideoSignature(buf, bytesRead)) return@withContext true
                 return@withContext bytesRead >= 32 * 1024

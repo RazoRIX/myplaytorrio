@@ -1,5 +1,7 @@
 package com.playtorrio.tv.core.iptv.model
 
+import androidx.compose.ui.graphics.Color
+
 /**
  * Raw scraped Xtream-Codes portal credentials (unverified).
  */
@@ -75,7 +77,20 @@ data class IptvEpisode(
 )
 
 /**
- * A single alive stream found while resolving a HardcodedChannel.
+ * Custom user-added quick channel for the Live TV quick channels row.
+ */
+data class QuickChannel(
+    val id: String,
+    val name: String,
+    val short: String,
+    val category: String = "Quick",
+    val keywords: List<String>,
+    val gradient: List<Color> = listOf(Color(0xFF6B7280), Color(0xFF1F2937)),
+    val iconUrl: String? = null
+)
+
+/**
+ * A single alive stream found while resolving a HardcodedChannel or QuickChannel.
  */
 data class ChannelHit(
     val portal: VerifiedPortal,
@@ -113,7 +128,12 @@ data class M3uChannel(
 data class M3uPlaylist(
     val id: String,
     val name: String,
-    val url: String,
-    val count: Int = 0,
-    val addedAt: Long = System.currentTimeMillis()
-)
+    val sourceUrl: String? = null,
+    val addedAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis(),
+    val channels: List<M3uChannel> = emptyList(),
+    val cachedCount: Int = 0
+) {
+    val count: Int get() = if (channels.isNotEmpty()) channels.size else cachedCount
+    val url: String get() = sourceUrl.orEmpty()
+}

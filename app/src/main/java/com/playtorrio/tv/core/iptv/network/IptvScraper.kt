@@ -79,6 +79,33 @@ object IptvScraper {
         page
     }
 
+    fun parsePortalsFromText(text: String, source: String = "Import"): List<IptvPortal> {
+        return extractPortals(text, source)
+    }
+
+    fun parsePortalsFromJson(jsonText: String, source: String = "Import"): List<IptvPortal> {
+        val list = mutableListOf<IptvPortal>()
+        try {
+            val trimmed = jsonText.trim()
+            if (trimmed.startsWith("[")) {
+                val arr = org.json.JSONArray(trimmed)
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    val u = obj.optString("url", obj.optString("host", obj.optString("server", "")))
+                    val un = obj.optString("username", obj.optString("user", ""))
+                    val pw = obj.optString("password", obj.optString("pass", ""))
+                    if (u.isNotEmpty() && un.isNotEmpty() && pw.isNotEmpty()) {
+                        list.add(IptvPortal(url = cleanPortalUrl(u), username = cleanCred(un), password = cleanCred(pw), source = source))
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        if (list.isEmpty()) {
+            return extractPortals(jsonText, source)
+        }
+        return list
+    }
+
     private suspend fun scrapeCloudVault(maxResults: Int = 50, after: String? = null): ScrapePage {
         val allPortals = loadCloudVaultDatabase()
         if (allPortals.isEmpty()) return ScrapePage(emptyList(), null)

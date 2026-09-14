@@ -29,7 +29,8 @@ data class PluginRepository(
     val enabled: Boolean = true,
     val lastUpdated: Long = 0L,
     val scraperCount: Int = 0,
-    val type: RepositoryType = RepositoryType.PLAYTORRIO_JS
+    val type: RepositoryType = RepositoryType.PLAYTORRIO_JS,
+    val isBundled: Boolean = false
 )
 
 /**
@@ -82,7 +83,8 @@ data class ScraperInfo(
     val contentLanguage: List<String>,
     val repositoryId: String,
     val formats: List<String>?,
-    val type: RepositoryType = RepositoryType.PLAYTORRIO_JS
+    val type: RepositoryType = RepositoryType.PLAYTORRIO_JS,
+    val isBundled: Boolean = false
 ) {
     fun supportsType(type: String): Boolean {
         val targetTypes = when (type.lowercase()) {
@@ -92,6 +94,24 @@ data class ScraperInfo(
         }
         return supportedTypes.map { it.lowercase() }.any { it in targetTypes }
     }
+}
+
+fun ScraperInfo.isBundledPhisher(repositoriesById: Map<String, PluginRepository>? = null): Boolean {
+    if (isBundled) return true
+    if (filename.contains("phisher", ignoreCase = true)) return true
+    if (id.contains("phisher", ignoreCase = true)) return true
+    if (repositoryId.contains("phisher", ignoreCase = true)) return true
+    val repo = repositoriesById?.get(repositoryId)
+    if (repo != null) {
+        if (repo.isBundled) return true
+        if (repo.name.contains("phisher", ignoreCase = true)) return true
+        if (repo.url.contains("phisher", ignoreCase = true)) return true
+        if (repo.url.contains("cloudstream-extensions-phisher", ignoreCase = true)) return true
+    }
+    if (type == RepositoryType.EXTERNAL_DEX && (repo == null || repo.isBundled || repo.url.contains("phisher", ignoreCase = true))) {
+        return true
+    }
+    return false
 }
 
 /**

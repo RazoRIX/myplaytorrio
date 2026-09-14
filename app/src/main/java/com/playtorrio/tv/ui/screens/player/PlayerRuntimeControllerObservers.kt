@@ -1,6 +1,7 @@
 package com.playtorrio.tv.ui.screens.player
 
 import android.util.Log
+import com.playtorrio.tv.R
 import com.playtorrio.tv.core.player.OpenSubtitlesHasher
 import androidx.media3.common.C
 import androidx.media3.common.Player
@@ -703,7 +704,9 @@ internal fun PlayerRuntimeController.retryCurrentStreamFromStartAfter416() {
 internal fun PlayerRuntimeController.retryCurrentStreamAfterTimeout(fromPositionMs: Long) {
     if (timeoutRecoveryAttempts >= PlayerRuntimeController.MAX_TIMEOUT_RECOVERY_ATTEMPTS) return
     timeoutRecoveryAttempts += 1
-    scheduleDeferredPlayerReinitialize(fromPositionMs = fromPositionMs)
+    val isLive = isIptvPlayback || _playbackTimeline.value.isLive
+    val targetPos = if (isLive) 0L else fromPositionMs
+    scheduleDeferredPlayerReinitialize(fromPositionMs = targetPos, clearResumeProgress = targetPos == 0L)
 }
 
 @androidx.annotation.OptIn(UnstableApi::class)
@@ -750,6 +753,84 @@ internal fun PlayerRuntimeController.cancelStallWatchdog() {
     stallWatchdogJob = null
 }
 
+/** Seamlessly reconnects a stalled or dropped live IPTV stream without full player/UI teardown. */
+internal fun PlayerRuntimeController.reconnectLiveStream(reason: String) {
+    if (isLiveReconnecting) return
+    if (userPausedManually) return
+    if (isInBackground) return
+
+    if (liveReconnectAttempts >= PlayerRuntimeController.MAX_LIVE_RECONNECT_ATTEMPTS) {
+        Log.w(
+            PlayerRuntimeController.TAG,
+            "LIVE_AUTO_RECONNECT: max reconnect attempts reached ($liveReconnectAttempts), showing error"
+        )
+        _uiState.update {
+            it.copy(
+                isBuffering = false,
+                error = context.getString(R.string.player_error_stream_unavailable)
+            )
+        }
+        return
+    }
+
+    isLiveReconnecting = true
+    liveReconnectAttempts++
+    val attempt = liveReconnectAttempts
+
+    Log.w(
+        PlayerRuntimeController.TAG,
+        "LIVE_AUTO_RECONNECT: reconnecting live stream (attempt $attempt/${PlayerRuntimeController.MAX_LIVE_RECONNECT_ATTEMPTS}, reason=$reason, url=${currentStreamUrl.safeHost()})"
+    )
+
+    cancelStallWatchdog()
+    cancelFirstFrameWatchdog()
+
+    val player = _exoPlayer
+    if (player == null || attempt >= 2) {
+        Log.i(PlayerRuntimeController.TAG, "LIVE_AUTO_RECONNECT: attempt=$attempt; falling back to clean player reinitialize")
+        scheduleDeferredPlayerReinitialize(fromPositionMs = 0L, clearResumeProgress = true)
+        scope.launch {
+            delay(2000L)
+            isLiveReconnecting = false
+        }
+        return
+    }
+
+    scope.launch {
+        try {
+            _uiState.update {
+                it.copy(
+                    isBuffering = true,
+                    error = null
+                )
+            }
+            player.stop()
+            val newSource = mediaSourceFactory.createMediaSource(
+                context = context,
+                url = currentStreamUrl,
+                headers = currentHeaders,
+                filename = currentFilename,
+                responseHeaders = currentStreamResponseHeaders,
+                mimeTypeOverride = currentStreamMimeType,
+                audioDelayUsProvider = audioDelayUs::get,
+                isIptvStream = true
+            )
+            player.setMediaSource(newSource, /* resetPosition = */ true)
+            player.prepare()
+            player.playWhenReady = !userPausedManually
+        } catch (e: Throwable) {
+            Log.e(PlayerRuntimeController.TAG, "LIVE_AUTO_RECONNECT: Fast setMediaSource failed; falling back to full reinit", e)
+            scheduleDeferredPlayerReinitialize(fromPositionMs = 0L, clearResumeProgress = true)
+        } finally {
+            delay(1000L)
+            isLiveReconnecting = false
+            if (_exoPlayer?.playbackState == Player.STATE_BUFFERING && !userPausedManually) {
+                maybeScheduleStallWatchdog()
+            }
+        }
+    }
+}
+
 /** Tiny skip past the buffered edge to force Media3 to cancel the in-flight Range request. */
 private val STALL_WATCHDOG_SKIP_PAST_BUFFERED_MS = PlayerStallWatchdogPolicy.SKIP_PAST_BUFFERED_MS
 
@@ -762,6 +843,7 @@ internal fun PlayerRuntimeController.maybeScheduleStallWatchdog() {
     stallWatchdogJob = scope.launch {
         var lastBufferedPosition = player.bufferedPosition
         var lastAdvanceAtMs = System.currentTimeMillis()
+        val bufferingStartedAtMs = System.currentTimeMillis()
 
         while (isActive) {
             delay(PlayerRuntimeController.STALL_WATCHDOG_POLL_INTERVAL_MS)
@@ -772,15 +854,19 @@ internal fun PlayerRuntimeController.maybeScheduleStallWatchdog() {
             }
 
             val nowMs = System.currentTimeMillis()
+            val isLive = isIptvPlayback || _playbackTimeline.value.isLive || livePlayer.isCurrentMediaItemLive || (livePlayer.duration == androidx.media3.common.C.TIME_UNSET)
             val bufferedNow = livePlayer.bufferedPosition
-            if (bufferedNow > lastBufferedPosition) {
-                // Real progress — reset the stall timer.
+
+            if (!isLive && bufferedNow > lastBufferedPosition) {
+                // Real progress for VOD — reset the stall timer.
                 lastBufferedPosition = bufferedNow
                 lastAdvanceAtMs = nowMs
                 continue
             }
 
-            val stalledForMs = nowMs - lastAdvanceAtMs
+            // For live streams, continuous buffering duration determines a stall so trickling packets don't stall the player forever.
+            val stalledForMs = if (isLive) (nowMs - bufferingStartedAtMs) else (nowMs - lastAdvanceAtMs)
+
             when (
                 val decision = PlayerStallWatchdogPolicy.evaluate(
                     PlayerStallWatchdogPolicy.Input(
@@ -788,10 +874,24 @@ internal fun PlayerRuntimeController.maybeScheduleStallWatchdog() {
                         playheadMs = livePlayer.currentPosition,
                         durationMs = livePlayer.duration,
                         stalledForMs = stalledForMs,
+                        isLive = isLive,
+                        hasRenderedFirstFrame = hasRenderedFirstFrame,
+                        userPausedManually = userPausedManually,
                     )
                 )
             ) {
                 PlayerStallWatchdogPolicy.Decision.KeepWaiting -> Unit
+                PlayerStallWatchdogPolicy.Decision.SkipUserPaused -> return@launch
+                PlayerStallWatchdogPolicy.Decision.ReconnectLiveStream -> {
+                    Log.w(
+                        PlayerRuntimeController.TAG,
+                        "STALL_WATCHDOG: Live stream buffering stalled for ${stalledForMs}ms " +
+                            "(bufferedPos=$bufferedNow, playhead=${livePlayer.currentPosition.coerceAtLeast(0L)}); " +
+                            "auto-reconnecting live stream seamlessly"
+                    )
+                    reconnectLiveStream(reason = "buffering_stall_${stalledForMs}ms")
+                    return@launch
+                }
                 PlayerStallWatchdogPolicy.Decision.SkipUnknownDuration -> {
                     Log.w(
                         PlayerRuntimeController.TAG,

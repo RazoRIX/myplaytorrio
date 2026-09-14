@@ -61,6 +61,10 @@ open class Plugin {
 
     // Some extensions call these overloads
     open fun load(context: Context) {
-        load(context as? Activity)
+        try {
+            load(context as? Activity)
+        } catch (_: ClassCastException) {
+            load(null as Activity?)
+        }
     }
 }

@@ -1,5 +1,12 @@
 package com.playtorrio.tv.ui.screens.search
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.tv.material3.MaterialTheme
+import coil3.compose.AsyncImage
 import com.playtorrio.tv.ui.theme.PlayTorrioTheme
 import com.playtorrio.tv.ui.screens.home.HeroBackdropState
 
@@ -36,9 +43,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -118,7 +128,8 @@ fun SearchScreen(
     viewModel: SearchViewModel = hiltViewModel(),
     onNavigateToDetail: (String, String, String) -> Unit,
     onNavigateToSeeAll: (catalogId: String, addonId: String, type: String) -> Unit = { _, _, _ -> },
-    onOpenDiscover: () -> Unit = {}
+    onOpenDiscover: () -> Unit = {},
+    onNavigateToTmdbEntityBrowse: (entityKind: String, entityId: Int, entityName: String) -> Unit = { _, _, _ -> }
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val watchedMovieIds by viewModel.watchedMovieIds.collectAsState()
@@ -652,7 +663,7 @@ fun SearchScreen(
                         }
                     }
 
-                    !uiState.isSearching && !hasPendingUnsubmittedQuery && visibleCatalogRows.isEmpty() -> {
+                    !uiState.isSearching && !hasPendingUnsubmittedQuery && visibleCatalogRows.isEmpty() && uiState.networkResults.isEmpty() -> {
                         item {
                             EmptyScreenState(
                                 title = stringResource(R.string.search_no_results_title),
@@ -663,6 +674,18 @@ fun SearchScreen(
                     }
 
                     else -> {
+                        if (uiState.networkResults.isNotEmpty()) {
+                            item(key = "network_search_results") {
+                                NetworksSearchSection(
+                                    networks = uiState.networkResults,
+                                    onNetworkClick = { item ->
+                                        onNavigateToTmdbEntityBrowse(item.kind, item.id, item.name)
+                                    },
+                                    modifier = Modifier.padding(horizontal = 52.dp, vertical = 8.dp)
+                                )
+                            }
+                        }
+
                         itemsIndexed(
                             items = visibleCatalogRows,
                             key = { index, item ->
@@ -1149,6 +1172,91 @@ private fun SearchInputField(
                     tint = PlayTorrioTheme.colors.TextPrimary
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun NetworksSearchSection(
+    networks: List<com.playtorrio.tv.core.tmdb.NetworkDirectoryItem>,
+    onNetworkClick: (com.playtorrio.tv.core.tmdb.NetworkDirectoryItem) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text(
+            text = "Networks & Studios",
+            style = MaterialTheme.typography.titleMedium,
+            color = PlayTorrioTheme.colors.TextPrimary
+        )
+
+        LazyRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            contentPadding = PaddingValues(vertical = 4.dp)
+        ) {
+            items(networks, key = { "${it.kind}_${it.id}" }) { item ->
+                NetworkSearchCard(
+                    item = item,
+                    onClick = { onNetworkClick(item) }
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun NetworkSearchCard(
+    item: com.playtorrio.tv.core.tmdb.NetworkDirectoryItem,
+    onClick: () -> Unit
+) {
+    var isFocused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(12.dp)
+
+    Box(
+        modifier = Modifier
+            .width(180.dp)
+            .height(90.dp)
+            .onFocusChanged { isFocused = it.isFocused }
+            .clip(shape)
+            .background(
+                if (isFocused) PlayTorrioTheme.colors.SurfaceVariant
+                else Color(0xFF1B2030)
+            )
+            .border(
+                width = if (isFocused) 2.dp else 1.dp,
+                color = if (isFocused) PlayTorrioTheme.colors.Secondary else Color.White.copy(alpha = 0.12f),
+                shape = shape
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            if (!item.logoUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = item.logoUrl,
+                    contentDescription = item.name,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp),
+                    contentScale = ContentScale.Fit
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+            }
+            Text(
+                text = item.name,
+                style = MaterialTheme.typography.labelMedium,
+                color = if (isFocused) PlayTorrioTheme.colors.TextPrimary else PlayTorrioTheme.colors.TextSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }

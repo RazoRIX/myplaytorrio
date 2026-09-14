@@ -616,8 +616,8 @@ open class MainActivity : ComponentActivity() {
                     }
 
                     // Navigate to content when launched from the Continue Watching channel row.
-                    LaunchedEffect(navController) {
-                        if (launchContentId != null && launchContentType != null && layoutChosen) {
+                    LaunchedEffect(navController, actualRoute) {
+                        if (actualRoute != null && launchContentId != null && launchContentType != null && layoutChosen) {
                             if (launchMode == "stream" && launchVideoId != null && launchName != null) {
                                 navController.navigate(
                                     Screen.Stream.createRoute(
@@ -648,7 +648,8 @@ open class MainActivity : ComponentActivity() {
                     }
 
                     val pendingLaunch by pendingLaunchIntent.collectAsState()
-                    LaunchedEffect(navController, layoutChosen, pendingLaunch) {
+                    LaunchedEffect(navController, layoutChosen, pendingLaunch, actualRoute) {
+                        if (actualRoute == null) return@LaunchedEffect
                         val intent = pendingLaunch ?: return@LaunchedEffect
                         if (!layoutChosen) return@LaunchedEffect
                         pendingLaunchIntent.value = null
@@ -684,31 +685,40 @@ open class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    LaunchedEffect(navController, layoutChosen, pendingDeepLink) {
+                    LaunchedEffect(navController, layoutChosen, pendingDeepLink, actualRoute) {
+                        if (actualRoute == null) return@LaunchedEffect
                         val url = pendingDeepLink ?: return@LaunchedEffect
                         if (!layoutChosen) return@LaunchedEffect
                         when (val deepLink = DeepLinkParser.parse(url)) {
                             is AppDeepLink.Meta -> {
-                                pendingDeepLinkUrl.value = null
-                                navController.navigate(
-                                    Screen.Detail.createRoute(
-                                        itemId = deepLink.id,
-                                        itemType = deepLink.type
-                                    )
-                                ) {
-                                    launchSingleTop = true
+                                val navigated = runCatching {
+                                    navController.navigate(
+                                        Screen.Detail.createRoute(
+                                            itemId = deepLink.id,
+                                            itemType = deepLink.type
+                                        )
+                                    ) {
+                                        launchSingleTop = true
+                                    }
+                                }.isSuccess
+                                if (navigated) {
+                                    pendingDeepLinkUrl.value = null
                                 }
                             }
                             is AppDeepLink.AddonInstall -> {
-                                navController.navigate(Screen.AddonManager.route) {
-                                    launchSingleTop = true
+                                val navigated = runCatching {
+                                    navController.navigate(Screen.AddonManager.route) {
+                                        launchSingleTop = true
+                                    }
+                                }.isSuccess
+                                if (navigated) {
+                                    Toast.makeText(context, context.getString(R.string.addon_installing), Toast.LENGTH_SHORT).show()
+                                    val installResult = deepLinkHandler.installAddon(deepLink.manifestUrl)
+                                    if (pendingDeepLinkUrl.value == url) {
+                                        pendingDeepLinkUrl.value = null
+                                    }
+                                    Toast.makeText(context, installResult.message, Toast.LENGTH_LONG).show()
                                 }
-                                Toast.makeText(context, context.getString(R.string.addon_installing), Toast.LENGTH_SHORT).show()
-                                val installResult = deepLinkHandler.installAddon(deepLink.manifestUrl)
-                                if (pendingDeepLinkUrl.value == url) {
-                                    pendingDeepLinkUrl.value = null
-                                }
-                                Toast.makeText(context, installResult.message, Toast.LENGTH_LONG).show()
                             }
                             null -> {
                                 pendingDeepLinkUrl.value = null

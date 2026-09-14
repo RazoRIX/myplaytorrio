@@ -38,7 +38,8 @@ class TmdbEntityBrowseViewModel @Inject constructor(
     val entityKind: TmdbEntityKind = TmdbEntityKind.fromRouteValue(
         savedStateHandle.get<String>("entityKind").orEmpty()
     )
-    val entityId: Int = savedStateHandle.get<Int>("entityId") ?: 0
+    var entityId: Int = savedStateHandle.get<Int>("entityId") ?: 0
+        private set
     val entityName: String = savedStateHandle.get<String>("entityName").orEmpty().let { raw ->
         runCatching { URLDecoder.decode(raw, "UTF-8") }.getOrDefault(raw)
     }
@@ -127,6 +128,17 @@ class TmdbEntityBrowseViewModel @Inject constructor(
     private fun load() {
         viewModelScope.launch {
             try {
+                if (entityId <= 0 && entityName.isNotBlank()) {
+                    val resolved = if (entityKind == TmdbEntityKind.NETWORK) {
+                        tmdbMetadataService.resolveNetworkIdByName(entityName)
+                    } else {
+                        tmdbMetadataService.resolveCompanyIdByName(entityName)
+                    }
+                    if (resolved != null && resolved > 0) {
+                        entityId = resolved
+                    }
+                }
+
                 val language = tmdbSettingsDataStore.settings.first().language
                 val browseData = tmdbMetadataService.fetchEntityBrowse(
                     entityKind = entityKind,

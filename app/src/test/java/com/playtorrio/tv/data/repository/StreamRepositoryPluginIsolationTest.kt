@@ -224,6 +224,7 @@ class StreamRepositoryPluginIsolationTest {
                 localDebridAvailabilityService = availability,
                 playTorrioHttpScraperManager = mockk(relaxed = true),
                 playTorrioP2PScraperManager = playTorrioP2PScraperManager,
+                playTorrioHttpSettingsDataStore = mockk(relaxed = true),
                 torrentSettings = torrentSettings
             ),
             api = api,

@@ -1163,6 +1163,9 @@ fun PlayerRuntimeController.onEvent(event: PlayerEvent) {
                         userPausedManually = false
                         cancelPauseOverlay()
                         player.play()
+                        if (player.playbackState == androidx.media3.common.Player.STATE_BUFFERING) {
+                            maybeScheduleStallWatchdog()
+                        }
                     }
                 }
             }

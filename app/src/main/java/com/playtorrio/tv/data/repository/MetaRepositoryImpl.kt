@@ -12,6 +12,10 @@ import com.playtorrio.tv.domain.model.enabledAddons
 import com.playtorrio.tv.domain.repository.AddonRepository
 import com.playtorrio.tv.domain.repository.MetaRepository
 import com.playtorrio.tv.R
+import com.playtorrio.tv.core.tmdb.TmdbMetadataService
+import com.playtorrio.tv.core.tmdb.TmdbService
+import com.playtorrio.tv.data.local.TmdbSettingsDataStore
+import com.playtorrio.tv.domain.model.ContentType
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -19,9 +23,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.CacheControl
 import java.net.URLEncoder
@@ -33,7 +42,10 @@ import javax.inject.Singleton
 class MetaRepositoryImpl @Inject constructor(
     @ApplicationContext private val context: Context,
     private val api: AddonApi,
-    private val addonRepository: AddonRepository
+    private val addonRepository: AddonRepository,
+    private val tmdbService: TmdbService? = null,
+    private val tmdbMetadataService: TmdbMetadataService? = null,
+    private val tmdbSettingsDataStore: TmdbSettingsDataStore? = null
 ) : MetaRepository {
     companion object {
         private const val TAG = "MetaRepository"
@@ -121,6 +133,22 @@ class MetaRepositoryImpl @Inject constructor(
     private val inFlightAddonMeta = ConcurrentHashMap<String, Deferred<MetaLookupResult>>()
     private val inFlightPrimaryMeta = ConcurrentHashMap<String, Deferred<Meta?>>()
 
+    init {
+        tmdbSettingsDataStore?.let { store ->
+            repositoryScope.launch {
+                store.settings
+                    .map { it.enabled }
+                    .distinctUntilChanged()
+                    .drop(1)
+                    .collect { enabled ->
+                        Log.d(TAG, "TMDB enabled toggled to $enabled, clearing meta caches")
+                        clearCache()
+                        tmdbMetadataService?.clearCache()
+                    }
+            }
+        }
+    }
+
     override fun getMeta(
         addonBaseUrl: String,
         type: String,
@@ -128,6 +156,24 @@ class MetaRepositoryImpl @Inject constructor(
     ): Flow<NetworkResult<Meta>> = flow {
         val requestedType = type.trim()
         val inferredType = inferCanonicalType(requestedType, id)
+
+        val tmdbSettings = tmdbSettingsDataStore?.settings?.first()
+        if (tmdbSettings?.enabled == true && tmdbService != null && tmdbMetadataService != null) {
+            val tmdbNumericId = resolveTmdbNumericId(id, requestedType)
+            if (tmdbNumericId != null) {
+                emit(NetworkResult.Loading)
+                val tmdbMeta = tmdbMetadataService.fetchFullMeta(
+                    tmdbId = tmdbNumericId.toString(),
+                    contentType = ContentType.fromString(requestedType),
+                    language = tmdbSettings.language,
+                    imdbIdFallback = if (id.startsWith("tt")) id.substringBefore(':') else null
+                )
+                if (tmdbMeta != null) {
+                    emit(NetworkResult.Success(tmdbMeta))
+                    return@flow
+                }
+            }
+        }
 
         // supportedCandidateType only ever returns one of these two, so every
         // metaCache entry written for this addon and title sits under one of two
@@ -217,6 +263,25 @@ class MetaRepositoryImpl @Inject constructor(
         id: String,
         sourceAddonBaseUrl: String?
     ): Flow<NetworkResult<Meta>> = flow {
+        val requestedType = type.trim()
+        val tmdbSettings = tmdbSettingsDataStore?.settings?.first()
+        if (tmdbSettings?.enabled == true && tmdbService != null && tmdbMetadataService != null) {
+            val tmdbNumericId = resolveTmdbNumericId(id, requestedType)
+            if (tmdbNumericId != null) {
+                emit(NetworkResult.Loading)
+                val tmdbMeta = tmdbMetadataService.fetchFullMeta(
+                    tmdbId = tmdbNumericId.toString(),
+                    contentType = ContentType.fromString(requestedType),
+                    language = tmdbSettings.language,
+                    imdbIdFallback = if (id.startsWith("tt")) id.substringBefore(':') else null
+                )
+                if (tmdbMeta != null) {
+                    emit(NetworkResult.Success(tmdbMeta))
+                    return@flow
+                }
+            }
+        }
+
         val cacheKey = metaLookupCacheKey(type, id)
         addonMetaCache[cacheKey]?.let { cached ->
             if (!cached.isExpired()) {
@@ -245,8 +310,6 @@ class MetaRepositoryImpl @Inject constructor(
         emit(NetworkResult.Loading)
 
         val addons = installedAddonsOrEmpty()
-
-        val requestedType = type.trim()
         val inferredType = inferCanonicalType(requestedType, id)
         val attemptedFailures = mutableListOf<MetaAttemptFailure>()
         val attemptedAddonNames = linkedSetOf<String>()
@@ -447,6 +510,25 @@ class MetaRepositoryImpl @Inject constructor(
         type: String,
         id: String
     ): Flow<NetworkResult<Meta>> = flow {
+        val requestedType = type.trim()
+        val tmdbSettings = tmdbSettingsDataStore?.settings?.first()
+        if (tmdbSettings?.enabled == true && tmdbService != null && tmdbMetadataService != null) {
+            val tmdbNumericId = resolveTmdbNumericId(id, requestedType)
+            if (tmdbNumericId != null) {
+                emit(NetworkResult.Loading)
+                val tmdbMeta = tmdbMetadataService.fetchFullMeta(
+                    tmdbId = tmdbNumericId.toString(),
+                    contentType = ContentType.fromString(requestedType),
+                    language = tmdbSettings.language,
+                    imdbIdFallback = if (id.startsWith("tt")) id.substringBefore(':') else null
+                )
+                if (tmdbMeta != null) {
+                    emit(NetworkResult.Success(tmdbMeta))
+                    return@flow
+                }
+            }
+        }
+
         val cacheKey = metaLookupCacheKey(type, id)
         primaryAddonMetaCache[cacheKey]?.let { cached ->
             if (!cached.isExpired()) {
@@ -459,7 +541,6 @@ class MetaRepositoryImpl @Inject constructor(
         emit(NetworkResult.Loading)
 
         val addons = installedAddonsOrEmpty()
-        val requestedType = type.trim()
         val inferredType = inferCanonicalType(requestedType, id)
         val candidate = selectPrimaryMetaCandidate(
             addons = addons,
@@ -718,6 +799,26 @@ class MetaRepositoryImpl @Inject constructor(
         return maxOf(ttlMs, MIN_META_TTL_MS)
     }
 
+    private suspend fun resolveTmdbNumericId(id: String, type: String): Int? {
+        val tmdb = tmdbService ?: return null
+        val trimmed = id.trim()
+        return when {
+            trimmed.startsWith("tmdb:", ignoreCase = true) -> {
+                trimmed.substringAfter(':').substringBefore(':').toIntOrNull()
+            }
+            trimmed.startsWith("tt", ignoreCase = true) -> {
+                val imdbBase = trimmed.substringBefore(':')
+                tmdb.imdbToTmdb(imdbBase, type)
+            }
+            trimmed.all { it.isDigit() } -> {
+                trimmed.toIntOrNull()
+            }
+            else -> {
+                tmdb.ensureTmdbId(trimmed, type)?.toIntOrNull()
+            }
+        }
+    }
+
     override fun clearCache() {
         metaCache.clear()
         addonMetaCache.clear()
@@ -725,6 +826,7 @@ class MetaRepositoryImpl @Inject constructor(
         inFlightMeta.clear()
         inFlightAddonMeta.clear()
         inFlightPrimaryMeta.clear()
+        tmdbMetadataService?.clearCache()
     }
 
     override fun getCachedMeta(type: String, id: String): Meta? {

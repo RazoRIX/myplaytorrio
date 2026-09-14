@@ -317,6 +317,13 @@ class ExternalExtensionLoader @Inject constructor(
             val activity = AcraApplication.getActivity()
             try {
                 plugin.load((activity as Context?) ?: context)
+            } catch (e: ClassCastException) {
+                Log.d(TAG, "plugin.load() ClassCastException with Activity, retrying with context only")
+                try {
+                    plugin.load(context)
+                } catch (e2: Exception) {
+                    Log.w(TAG, "plugin.load(context) also failed: ${e2.message}")
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "plugin.load() threw (partial load, ${plugin.registeredMainAPIs.size} APIs so far): ${e.message}", e)
             } catch (e: Error) {

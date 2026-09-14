@@ -1292,10 +1292,10 @@
     <string name="animeskip_invalid_client_id">Invalid Client ID</string>
     <string name="action_clear">Clear</string>
 
-    <string name="tmdb_title">TMDB Enrichment</string>
-    <string name="tmdb_subtitle">Choose which metadata fields should come from TMDB</string>
-    <string name="tmdb_enable_title">Enable TMDB Enrichment</string>
-    <string name="tmdb_enable_subtitle">Use TMDB as a metadata source to enhance addon data</string>
+    <string name="tmdb_title">TMDB Metadata</string>
+    <string name="tmdb_subtitle">Use TMDB as the primary metadata provider</string>
+    <string name="tmdb_enable_title">TMDB Metadata Provider</string>
+    <string name="tmdb_enable_subtitle">Use TMDB for all details, cast, trailers, and episode metadata. Disables other metadata addons.</string>
     <string name="tmdb_modern_home_title">Enable on Modern Home</string>
     <string name="tmdb_modern_home_subtitle">Also apply TMDB enrichment to Modern Home hero and focused cards</string>
     <string name="tmdb_enrich_continue_watching_title">Enrich Continue Watching</string>

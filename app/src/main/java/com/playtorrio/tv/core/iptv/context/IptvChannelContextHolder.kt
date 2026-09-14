@@ -8,6 +8,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+import com.playtorrio.tv.core.iptv.model.ChannelHit
+
 sealed class IptvLiveContext {
     data class Portal(
         val portal: VerifiedPortal,
@@ -17,8 +19,11 @@ sealed class IptvLiveContext {
     ) : IptvLiveContext()
 
     data class Hardcoded(
-        val currentChannelId: String,
-        val allChannels: List<HardcodedChannel>
+        val channel: HardcodedChannel? = null,
+        val currentChannelId: String = channel?.id.orEmpty(),
+        val hits: List<ChannelHit> = emptyList(),
+        val currentStreamUrl: String = "",
+        val allChannels: List<HardcodedChannel> = HardcodedChannels.all
     ) : IptvLiveContext()
 }
 
@@ -41,11 +46,30 @@ object IptvChannelContextHolder {
     }
 
     fun setHardcodedContext(
-        currentChannelId: String,
+        channel: HardcodedChannel,
+        hits: List<ChannelHit> = emptyList(),
+        currentStreamUrl: String = "",
         allChannels: List<HardcodedChannel> = HardcodedChannels.all
     ) {
         _currentContext.value = IptvLiveContext.Hardcoded(
+            channel = channel,
+            currentChannelId = channel.id,
+            hits = hits,
+            currentStreamUrl = currentStreamUrl,
+            allChannels = allChannels
+        )
+    }
+
+    fun setHardcodedContext(
+        currentChannelId: String,
+        allChannels: List<HardcodedChannel> = HardcodedChannels.all
+    ) {
+        val channel = HardcodedChannels.byId(currentChannelId)
+        _currentContext.value = IptvLiveContext.Hardcoded(
+            channel = channel,
             currentChannelId = currentChannelId,
+            hits = emptyList(),
+            currentStreamUrl = "",
             allChannels = allChannels
         )
     }
@@ -57,10 +81,20 @@ object IptvChannelContextHolder {
         }
     }
 
+    fun updateCurrentStreamUrl(streamUrl: String) {
+        val ctx = _currentContext.value
+        if (ctx is IptvLiveContext.Hardcoded) {
+            _currentContext.value = ctx.copy(currentStreamUrl = streamUrl)
+        }
+    }
+
     fun updateCurrentHardcodedId(channelId: String) {
         val ctx = _currentContext.value
         if (ctx is IptvLiveContext.Hardcoded) {
-            _currentContext.value = ctx.copy(currentChannelId = channelId)
+            _currentContext.value = ctx.copy(
+                currentChannelId = channelId,
+                channel = HardcodedChannels.byId(channelId) ?: ctx.channel
+            )
         }
     }
 

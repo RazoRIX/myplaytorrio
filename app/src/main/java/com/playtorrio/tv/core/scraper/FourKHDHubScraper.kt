@@ -90,19 +90,12 @@ class FourKHDHubScraper : StreamScraper {
                     }
                 }
             }
+            if (detailUrl == null) return@withContext emptyList()
 
-            if (detailUrl == null) {
-                val firstLink = doc.selectFirst(".content-area a[href*='/'], .search-results a[href*='/']")?.attr("href")
-                if (!firstLink.isNullOrBlank() && firstLink.startsWith("http")) {
-                    detailUrl = firstLink
-                }
-            }
-
-            if (detailUrl != null) {
-                val detailReq = Request.Builder()
-                    .url(detailUrl)
-                    .apply { headers.forEach { (k, v) -> addHeader(k, v) } }
-                    .build()
+            val detailReq = Request.Builder()
+                .url(detailUrl)
+                .apply { headers.forEach { (k, v) -> addHeader(k, v) } }
+                .build()
 
                 val detailHtml = httpClient.newCall(detailReq).execute().use { it.body?.string().orEmpty() }
                 val detailDoc = Jsoup.parse(detailHtml)
@@ -123,7 +116,6 @@ class FourKHDHubScraper : StreamScraper {
                         )
                     }
                 }
-            }
         } catch (e: Exception) {
             Log.d(TAG, "FourKHDHubScraper error: ${e.message}")
         }

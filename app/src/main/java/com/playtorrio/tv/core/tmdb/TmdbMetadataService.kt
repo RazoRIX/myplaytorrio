@@ -17,12 +17,15 @@ import com.playtorrio.tv.data.remote.api.TmdbPersonCreditsResponse
 import com.playtorrio.tv.data.remote.api.TmdbRecommendationResult
 import com.playtorrio.tv.data.remote.api.TmdbVideoResult
 import com.playtorrio.tv.domain.model.ContentType
+import com.playtorrio.tv.domain.model.Meta
+import com.playtorrio.tv.domain.model.MetaBehaviorHints
 import com.playtorrio.tv.domain.model.MetaCastMember
 import com.playtorrio.tv.domain.model.MetaCompany
 import com.playtorrio.tv.domain.model.MetaPreview
 import com.playtorrio.tv.domain.model.MetaTrailer
 import com.playtorrio.tv.domain.model.PersonDetail
 import com.playtorrio.tv.domain.model.PosterShape
+import com.playtorrio.tv.domain.model.Video
 import java.time.LocalDate
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
@@ -56,13 +59,224 @@ class TmdbMetadataService(
     // In-memory caches
     private val enrichmentCache = ConcurrentHashMap<String, TmdbEnrichment>()
     private val episodeCache = ConcurrentHashMap<String, Map<Pair<Int, Int>, TmdbEpisodeEnrichment>>()
+    private val fullMetaCache = ConcurrentHashMap<String, Meta>()
     private val enrichmentInFlight = ConcurrentHashMap<String, CompletableDeferred<TmdbEnrichment?>>()
     private val episodeInFlight = ConcurrentHashMap<String, CompletableDeferred<Map<Pair<Int, Int>, TmdbEpisodeEnrichment>>>()
+    private val fullMetaInFlight = ConcurrentHashMap<String, CompletableDeferred<Meta?>>()
     private val personCache = ConcurrentHashMap<String, PersonDetail>()
     private val moreLikeThisCache = ConcurrentHashMap<String, List<MetaPreview>>()
     private val entityHeaderCache = ConcurrentHashMap<String, TmdbEntityHeader>()
     private val entityRailCache = ConcurrentHashMap<String, List<MetaPreview>>()
     private val entityBrowseCache = ConcurrentHashMap<String, TmdbEntityBrowseData>()
+
+    fun clearCache() {
+        enrichmentCache.clear()
+        episodeCache.clear()
+        fullMetaCache.clear()
+        enrichmentInFlight.clear()
+        episodeInFlight.clear()
+        fullMetaInFlight.clear()
+        personCache.clear()
+        moreLikeThisCache.clear()
+        entityHeaderCache.clear()
+        entityRailCache.clear()
+        entityBrowseCache.clear()
+    }
+
+    suspend fun fetchFullMeta(
+        tmdbId: String,
+        contentType: ContentType,
+        language: String = "en",
+        imdbIdFallback: String? = null
+    ): Meta? = withContext(ioDispatcher) {
+        val normalizedLanguage = normalizeTmdbLanguage(language)
+        val cleanTmdbId = tmdbId
+            .removePrefix("tmdb:")
+            .removePrefix("movie:")
+            .removePrefix("series:")
+            .substringBefore(':')
+            .trim()
+        val cacheKey = "$cleanTmdbId:${contentType.name}:$normalizedLanguage"
+        fullMetaCache[cacheKey]?.let { return@withContext it }
+        fullMetaInFlight[cacheKey]?.let { return@withContext it.await() }
+
+        val requestDeferred = CompletableDeferred<Meta?>()
+        fullMetaInFlight.putIfAbsent(cacheKey, requestDeferred)?.let { existing ->
+            return@withContext existing.await()
+        }
+
+        try {
+            val tmdbType = when (contentType) {
+                ContentType.SERIES, ContentType.TV -> "tv"
+                else -> "movie"
+            }
+
+            val numericId = if (cleanTmdbId.startsWith("tt", ignoreCase = true)) {
+                try {
+                    val findResp = tmdbApi.findByExternalId(cleanTmdbId, TMDB_API_KEY, "imdb_id").body()
+                    val match = if (tmdbType == "tv") findResp?.tvResults?.firstOrNull() else findResp?.movieResults?.firstOrNull()
+                        ?: findResp?.movieResults?.firstOrNull() ?: findResp?.tvResults?.firstOrNull()
+                    match?.id
+                } catch (e: Exception) {
+                    null
+                }
+            } else {
+                cleanTmdbId.toIntOrNull()
+            }
+
+            if (numericId == null) {
+                requestDeferred.complete(null)
+                return@withContext null
+            }
+
+            // Fetch enrichment (which gives title, description, cast, crew, artwork, etc.)
+            val enrichment = fetchEnrichment(numericId.toString(), contentType, language)
+
+            // Concurrently fetch external IDs and details (for seasons summary if TV)
+            val (externalIds, details) = coroutineScope {
+                val extDef = async {
+                    runCatching {
+                        if (tmdbType == "tv") tmdbApi.getTvExternalIds(numericId, TMDB_API_KEY).body()
+                        else tmdbApi.getMovieExternalIds(numericId, TMDB_API_KEY).body()
+                    }.getOrNull()
+                }
+                val detDef = async {
+                    runCatching {
+                        if (tmdbType == "tv") tmdbApi.getTvDetails(numericId, TMDB_API_KEY, normalizedLanguage).body()
+                        else tmdbApi.getMovieDetails(numericId, TMDB_API_KEY, normalizedLanguage).body()
+                    }.getOrNull()
+                }
+                extDef.await() to detDef.await()
+            }
+
+            val imdbId = externalIds?.imdbId?.takeIf { it.startsWith("tt") }
+                ?: (if (cleanTmdbId.startsWith("tt")) cleanTmdbId else null)
+                ?: imdbIdFallback?.takeIf { it.startsWith("tt") }
+
+            val videos: List<Video> = if (tmdbType == "tv") {
+                val seasons = details?.seasons.orEmpty()
+                    .filter { (it.seasonNumber ?: 0) >= 0 && (it.episodeCount ?: 0) > 0 }
+                val semaphore = Semaphore(TMDB_SEASON_REQUEST_CONCURRENCY)
+                coroutineScope {
+                    seasons.map { seasonSummary ->
+                        async {
+                            val sNum = seasonSummary.seasonNumber ?: return@async emptyList<Video>()
+                            semaphore.withPermit {
+                                try {
+                                    val resp = tmdbApi.getTvSeasonDetails(numericId, sNum, TMDB_API_KEY, normalizedLanguage)
+                                    resp.body()?.episodes.orEmpty().mapNotNull { ep ->
+                                        val epNum = ep.episodeNumber ?: return@mapNotNull null
+                                        val videoId = if (imdbId != null) "$imdbId:$sNum:$epNum" else "tmdb:$numericId:$sNum:$epNum"
+                                        val epTitle = ep.name?.takeIf { it.isNotBlank() } ?: "Episode $epNum"
+                                        val thumbnail = ep.stillPath?.takeIf { it.isNotBlank() }?.let { "https://image.tmdb.org/t/p/w500$it" }
+                                        val epOverview = ep.overview?.takeIf { it.isNotBlank() }
+                                        val epReleased = ep.airDate?.takeIf { it.isNotBlank() }
+                                        val epRuntime = ep.runtime ?: details?.runtime ?: details?.episodeRunTime?.firstOrNull()
+                                        Video(
+                                            id = videoId,
+                                            title = epTitle,
+                                            released = epReleased,
+                                            thumbnail = thumbnail,
+                                            season = sNum,
+                                            episode = epNum,
+                                            overview = epOverview,
+                                            runtime = epRuntime,
+                                            rating = ep.voteAverage
+                                        )
+                                    }
+                                } catch (e: Exception) {
+                                    Log.w(TAG, "Failed to fetch season $sNum details: ${e.message}")
+                                    emptyList()
+                                }
+                            }
+                        }
+                    }.awaitAll().flatten()
+                }.sortedWith(compareBy({ it.season ?: 0 }, { it.episode ?: 0 }))
+            } else {
+                val defaultVideoId = imdbId ?: "tmdb:$numericId"
+                val movieTitle = enrichment?.localizedTitle ?: enrichment?.originalTitle ?: details?.title ?: details?.originalTitle ?: ""
+                listOf(
+                    Video(
+                        id = defaultVideoId,
+                        title = movieTitle,
+                        released = details?.releaseDate,
+                        thumbnail = enrichment?.poster,
+                        season = null,
+                        episode = null,
+                        overview = enrichment?.description ?: details?.overview,
+                        runtime = enrichment?.runtimeMinutes ?: details?.runtime,
+                        rating = enrichment?.rating ?: details?.voteAverage
+                    )
+                )
+            }
+
+            val metaId = imdbId ?: "tmdb:$numericId"
+            val metaName = (enrichment?.localizedTitle ?: enrichment?.originalTitle ?: details?.title ?: details?.name ?: "").ifBlank { "Unknown" }
+            val metaPoster = enrichment?.poster ?: buildImageUrl(details?.posterPath, "w500")
+            val metaBackdrop = enrichment?.backdrop ?: buildImageUrl(details?.backdropPath, "w1280")
+            val runtimeStr = (enrichment?.runtimeMinutes ?: details?.runtime)?.let { "$it min" }
+
+            val fullMeta = Meta(
+                id = metaId,
+                type = contentType,
+                rawType = contentType.toApiString(),
+                name = metaName,
+                poster = metaPoster,
+                posterShape = PosterShape.POSTER,
+                background = metaBackdrop,
+                logo = enrichment?.logo,
+                description = enrichment?.description ?: details?.overview,
+                releaseInfo = enrichment?.releaseInfo ?: (if (tmdbType == "tv") details?.firstAirDate.yearPart() else details?.releaseDate.yearPart()),
+                status = enrichment?.status ?: details?.status,
+                imdbRating = enrichment?.rating?.toFloat() ?: details?.voteAverage?.toFloat(),
+                genres = enrichment?.genres ?: details?.genres?.mapNotNull { it.name.trim().takeIf(String::isNotBlank) } ?: emptyList(),
+                runtime = runtimeStr,
+                director = enrichment?.director ?: emptyList(),
+                writer = enrichment?.writer ?: emptyList(),
+                cast = enrichment?.castMembers?.map { it.name } ?: emptyList(),
+                castMembers = enrichment?.castMembers ?: emptyList(),
+                videos = videos,
+                productionCompanies = enrichment?.productionCompanies ?: emptyList(),
+                networks = enrichment?.networks ?: emptyList(),
+                ageRating = enrichment?.ageRating,
+                country = enrichment?.countries?.joinToString(", "),
+                awards = null,
+                language = enrichment?.language ?: details?.originalLanguage,
+                links = emptyList(),
+                imdbId = imdbId,
+                slug = null,
+                released = if (tmdbType == "tv") details?.firstAirDate else details?.releaseDate,
+                landscapePoster = metaBackdrop,
+                rawPosterUrl = metaPoster,
+                behaviorHints = if (tmdbType == "movie") MetaBehaviorHints(defaultVideoId = imdbId ?: "tmdb:$numericId") else null,
+                trailers = enrichment?.trailers ?: emptyList(),
+                trailerYtIds = enrichment?.trailers?.mapNotNull { it.ytId }?.distinct() ?: emptyList(),
+                releaseDates = emptyList(),
+                hasPoster = metaPoster != null,
+                hasBackground = metaBackdrop != null,
+                hasLandscapePoster = metaBackdrop != null,
+                hasLogo = enrichment?.logo != null,
+                hasLinks = false,
+                hasVideos = videos.isNotEmpty()
+            )
+
+            fullMetaCache[cacheKey] = fullMeta
+            requestDeferred.complete(fullMeta)
+            fullMeta
+        } catch (e: CancellationException) {
+            requestDeferred.cancel(e)
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to fetch full TMDB meta for $cleanTmdbId: ${e.message}", e)
+            requestDeferred.complete(null)
+            null
+        } finally {
+            if (!requestDeferred.isCompleted) {
+                requestDeferred.complete(null)
+            }
+            fullMetaInFlight.remove(cacheKey, requestDeferred)
+        }
+    }
 
     suspend fun fetchEnrichment(
         tmdbId: String,
@@ -1289,14 +1503,19 @@ class TmdbMetadataService(
             personCache[cacheKey]?.let { return@withContext it }
 
             try {
-                val (person, credits) = coroutineScope {
+                val (person, credits, images) = coroutineScope {
                     val personDeferred = async {
                         tmdbApi.getPersonDetails(personId, TMDB_API_KEY, normalizedLanguage).body()
                     }
                     val creditsDeferred = async {
                         tmdbApi.getPersonCombinedCredits(personId, TMDB_API_KEY, normalizedLanguage).body()
                     }
-                    Pair(personDeferred.await(), creditsDeferred.await())
+                    val imagesDeferred = async {
+                        runCatching {
+                            tmdbApi.getPersonImages(personId, TMDB_API_KEY).body()
+                        }.getOrNull()
+                    }
+                    Triple(personDeferred.await(), creditsDeferred.await(), imagesDeferred.await())
                 }
 
                 if (person == null) return@withContext null
@@ -1387,6 +1606,12 @@ class TmdbMetadataService(
                     else -> crewTvCredits
                 }
 
+                val photos = images?.profiles
+                    ?.mapNotNull { it.filePath?.takeIf { p -> p.isNotBlank() } }
+                    ?.mapNotNull { buildImageUrl(it, "h632") }
+                    ?.distinct()
+                    .orEmpty()
+
                 val detail = PersonDetail(
                     tmdbId = person.id,
                     name = resolvedPersonName,
@@ -1397,7 +1622,8 @@ class TmdbMetadataService(
                     profilePhoto = buildImageUrl(person.profilePath, "w500"),
                     knownFor = person.knownForDepartment?.takeIf { it.isNotBlank() },
                     movieCredits = movieCredits,
-                    tvCredits = tvCredits
+                    tvCredits = tvCredits,
+                    photos = photos
                 )
                 personCache[cacheKey] = detail
                 detail
@@ -1406,6 +1632,58 @@ class TmdbMetadataService(
                 null
             }
         }
+
+    suspend fun resolvePersonIdByName(name: String): Int? = withContext(ioDispatcher) {
+        val trimmed = name.trim()
+        if (trimmed.isBlank()) return@withContext null
+        try {
+            val response = tmdbApi.searchPerson(
+                apiKey = TMDB_API_KEY,
+                query = trimmed
+            ).body()
+            response?.results?.firstOrNull {
+                it.name?.equals(trimmed, ignoreCase = true) == true
+            }?.id ?: response?.results?.firstOrNull()?.id
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to resolve person id by name '$name': ${e.message}")
+            null
+        }
+    }
+
+    suspend fun resolveCompanyIdByName(name: String): Int? = withContext(ioDispatcher) {
+        val trimmed = name.trim()
+        if (trimmed.isBlank()) return@withContext null
+        val dirMatch = NetworkDirectory.search(trimmed).firstOrNull {
+            it.name.equals(trimmed, ignoreCase = true)
+        } ?: NetworkDirectory.search(trimmed).firstOrNull()
+        if (dirMatch != null && dirMatch.id > 0) {
+            return@withContext dirMatch.id
+        }
+        try {
+            val response = tmdbApi.searchCompany(
+                apiKey = TMDB_API_KEY,
+                query = trimmed
+            ).body()
+            response?.results?.firstOrNull {
+                it.name?.equals(trimmed, ignoreCase = true) == true
+            }?.id ?: response?.results?.firstOrNull()?.id
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to resolve company id by name '$name': ${e.message}")
+            null
+        }
+    }
+
+    suspend fun resolveNetworkIdByName(name: String): Int? = withContext(ioDispatcher) {
+        val trimmed = name.trim()
+        if (trimmed.isBlank()) return@withContext null
+        val dirMatch = NetworkDirectory.search(trimmed).firstOrNull {
+            it.name.equals(trimmed, ignoreCase = true)
+        } ?: NetworkDirectory.search(trimmed).firstOrNull()
+        if (dirMatch != null && dirMatch.id > 0) {
+            return@withContext dirMatch.id
+        }
+        resolveCompanyIdByName(name)
+    }
 
     private fun shouldPreferCrewCredits(knownForDepartment: String?): Boolean {
         val department = knownForDepartment?.trim()?.lowercase() ?: return false

@@ -39,6 +39,7 @@ import com.playtorrio.tv.domain.model.Video
 import com.playtorrio.tv.domain.model.WatchProgress
 import com.playtorrio.tv.domain.model.StreamDebridCacheState
 import com.playtorrio.tv.domain.model.enabledAddons
+import com.playtorrio.tv.domain.model.isBundledPhisher
 import com.playtorrio.tv.domain.repository.AddonRepository
 import com.playtorrio.tv.domain.repository.MetaRepository
 import com.playtorrio.tv.domain.repository.StreamRepository
@@ -900,13 +901,19 @@ class StreamScreenViewModel @Inject constructor(
             .filter { it.supportsStreamResourceForChip(contentType) }
             .map { it.displayName }
 
+        val repositoriesById = try {
+            pluginManager.repositories.first().associateBy { it.id }
+        } catch (_: Exception) {
+            emptyMap()
+        }
+
         val pluginNames = try {
             if (pluginManager.pluginsEnabled.first()) {
                 val groupByRepository = pluginManager.groupStreamsByRepository.first()
                 val scrapers = pluginManager.enabledScrapers.first()
                     .filter { it.supportsType(contentType) }
+                    .filterNot { it.isBundledPhisher(repositoriesById) }
                 if (groupByRepository) {
-                    val repositoriesById = pluginManager.repositories.first().associateBy { it.id }
                     scrapers
                         .map { scraper ->
                             repositoriesById[scraper.repositoryId]?.name?.takeIf { it.isNotBlank() } ?: scraper.name
@@ -924,7 +931,15 @@ class StreamScreenViewModel @Inject constructor(
             emptyList()
         }
 
-        val orderedNames = (directDebridSourceNames + addonNames + pluginNames).distinct()
+        val p2pEnabled = try {
+            torrentSettings.settings.first().p2pEnabled
+        } catch (_: Exception) {
+            false
+        }
+        val builtInSources = listOf(com.playtorrio.tv.core.scraper.PlayTorrioHttpScraperManager.ADDON_NAME) +
+            if (p2pEnabled) listOf(com.playtorrio.tv.core.scraper.p2p.PlayTorrioP2PScraperManager.ADDON_NAME) else emptyList()
+
+        val orderedNames = (directDebridSourceNames + addonNames + builtInSources + pluginNames).distinct()
         if (orderedNames.isEmpty()) {
             updateUiStateIfChanged { it.copy(sourceChips = emptyList()) }
             return
@@ -1020,7 +1035,10 @@ class StreamScreenViewModel @Inject constructor(
                 run {
                     val prefixes = resource.idPrefixes?.takeIf { it.isNotEmpty() }
                         ?: idPrefixes.takeIf { it.isNotEmpty() }
-                    prefixes == null || prefixes.any { prefix -> videoId.startsWith(prefix) }
+                    prefixes == null || prefixes.any { prefix ->
+                        videoId.startsWith(prefix) ||
+                            (prefix == "tt" && (videoId.startsWith("tt") || videoId.startsWith("tmdb:") || (contentId?.startsWith("tt") == true)))
+                    }
                 }
         }
     }

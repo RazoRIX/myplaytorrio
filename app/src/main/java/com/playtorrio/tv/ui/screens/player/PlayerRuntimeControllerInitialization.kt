@@ -1141,6 +1141,9 @@ internal fun PlayerRuntimeController.initializePlayer(
                         }
 
                         if (playbackState == Player.STATE_READY) {
+                            if (!userPausedManually) {
+                                liveReconnectAttempts = 0
+                            }
                             if (pendingSeekTelemetryRequestedAtMs > 0L && pendingSeekTelemetryReadyAtMs <= 0L) {
                                 val latencyMs = (System.currentTimeMillis() - pendingSeekTelemetryRequestedAtMs).coerceAtLeast(0L)
                                 pendingSeekTelemetryReadyAtMs = System.currentTimeMillis()
@@ -1271,6 +1274,7 @@ internal fun PlayerRuntimeController.initializePlayer(
                         )
                         _uiState.update { it.copy(isPlaying = isPlaying) }
                         if (isPlaying) {
+                            liveReconnectAttempts = 0
                             userPausedManually = false
                             cancelPauseOverlay()
                             startProgressUpdates()
@@ -1313,6 +1317,7 @@ internal fun PlayerRuntimeController.initializePlayer(
                     override fun onRenderedFirstFrame() {
                         val isFirstFrame = !hasRenderedFirstFrame  // capture BEFORE flipping
                         hasRenderedFirstFrame = true
+                        liveReconnectAttempts = 0
                         mediaSourceFactory.unlockStartupPrefetch()
                         if (isFirstFrame && _uiState.value.postPlayDismissedForCurrentEpisode) {
                             _uiState.update { it.copy(postPlayDismissedForCurrentEpisode = false) }
@@ -1348,6 +1353,27 @@ internal fun PlayerRuntimeController.initializePlayer(
                         cancelFirstFrameWatchdog()
                         val detailedError = error.toDisplayMessage(context)
                         cancelStableProgressReset()
+
+                        val isLive = isIptvPlayback || _playbackTimeline.value.isLive || isCurrentMediaItemLive || (duration == androidx.media3.common.C.TIME_UNSET)
+                        if (isLive && !userPausedManually && !isInBackground) {
+                            if (isLiveReconnecting) {
+                                Log.i(
+                                    PlayerRuntimeController.TAG,
+                                    "onPlayerError: Live reconnect already in progress; suppressing transient error ($detailedError)"
+                                )
+                                return
+                            }
+                            val httpCause = error.findInvalidResponseCodeException()
+                            val isFatalAuth = httpCause != null && (httpCause.responseCode == 401 || httpCause.responseCode == 403)
+                            if (!isFatalAuth && liveReconnectAttempts < PlayerRuntimeController.MAX_LIVE_RECONNECT_ATTEMPTS) {
+                                Log.w(
+                                    PlayerRuntimeController.TAG,
+                                    "onPlayerError: Live stream error ($detailedError); triggering auto-reconnect"
+                                )
+                                reconnectLiveStream("player_error_${error.errorCodeName}")
+                                return
+                            }
+                        }
 
                         // If the codec crashed while the app is in the background (e.g. another
                         // app reclaimed the hardware decoder), don't run the retry chain. Each
@@ -1991,6 +2017,8 @@ internal fun PlayerRuntimeController.resetLoadingOverlayForNewStream() {
     shouldEnforceAutoplayOnFirstReady = true
     userPausedManually = false
     timeoutRecoveryAttempts = 0
+    liveReconnectAttempts = 0
+    isLiveReconnecting = false
     hasRetriedCurrentStreamAfterUnexpectedNpe = false
     hasRetriedCurrentStreamAfterMediaPeriodHolderCrash = false
     hasRetriedCurrentStreamAfter416 = false
@@ -2419,7 +2447,7 @@ private fun PlaybackException.isMediaPeriodHolderStateCrash(): Boolean {
     return details.contains("mediaperiodholder", ignoreCase = true) && details.contains(".info", ignoreCase = true) && details.contains("null", ignoreCase = true)
 }
 
-private fun String.safeHost(): String {
+internal fun String.safeHost(): String {
     return runCatching { Uri.parse(this).host ?: "unknown" }.getOrDefault("unknown")
 }
 

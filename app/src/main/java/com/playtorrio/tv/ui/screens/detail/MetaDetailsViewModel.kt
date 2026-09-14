@@ -720,6 +720,28 @@ class MetaDetailsViewModel @Inject constructor(
             if (metaLookupId != itemId) {
                 _effectiveContentId.value = metaLookupId
             }
+
+            val tmdbSettings = tmdbSettingsDataStore.settings.first()
+            if (tmdbSettings.enabled) {
+                metaRepository.getMetaFromAllAddons(type = itemType, id = metaLookupId).collect { result ->
+                    when (result) {
+                        is NetworkResult.Success -> {
+                            applyMetaWithEnrichment(result.data)
+                        }
+                        is NetworkResult.Error -> {
+                            if (!tryApplyTmdbFallbackMeta()) {
+                                val errorMsg = buildMetaLoadErrorMessage(result.message, metaLookupId)
+                                _uiState.update { it.copy(isLoading = false, error = errorMsg) }
+                            }
+                        }
+                        NetworkResult.Loading -> {
+                            _uiState.update { it.copy(isLoading = true) }
+                        }
+                    }
+                }
+                return@launch
+            }
+
             val preferExternal = layoutPreferenceDataStore.preferExternalMetaAddonDetail.first()
 
             if (preferExternal) {
@@ -798,46 +820,11 @@ class MetaDetailsViewModel @Inject constructor(
             ?: return false
         val type = ContentType.fromString(itemType)
         val settings = tmdbSettingsDataStore.settings.first()
-        val enrichment = tmdbMetadataService.fetchEnrichment(
+        val meta = tmdbMetadataService.fetchFullMeta(
             tmdbId = tmdbId.toString(),
             contentType = type,
             language = settings.language
         ) ?: return false
-        val meta = Meta(
-            id = itemId,
-            type = type,
-            rawType = itemType,
-            name = enrichment.localizedTitle ?: enrichment.originalTitle
-                ?: context.getString(R.string.detail_tmdb_fallback_title, tmdbId),
-            poster = enrichment.poster,
-            posterShape = com.playtorrio.tv.domain.model.PosterShape.POSTER,
-            background = enrichment.backdrop,
-            logo = enrichment.logo,
-            description = enrichment.description,
-            releaseInfo = enrichment.releaseInfo,
-            status = enrichment.status,
-            imdbRating = enrichment.rating?.toFloat(),
-            genres = enrichment.genres,
-            runtime = enrichment.runtimeMinutes?.toString(),
-            director = enrichment.director,
-            writer = enrichment.writer,
-            cast = enrichment.castMembers.map { it.name },
-            castMembers = enrichment.castMembers,
-            videos = emptyList(),
-            productionCompanies = enrichment.productionCompanies,
-            networks = enrichment.networks,
-            ageRating = enrichment.ageRating,
-            country = enrichment.countries?.joinToString(", "),
-            awards = null,
-            language = enrichment.language,
-            links = emptyList(),
-            // Honor the "Disable Trailers in TMDB Enrichment" toggle even on
-            // this synthetic fallback meta (issue #1647). The main enrichment
-            // merge at the bottom of applyMetaWithEnrichment already gates on
-            // settings.useTrailers; without the same gate here, the fallback
-            // path would smuggle TMDB trailers in unconditionally.
-            trailers = if (settings.useTrailers) enrichment.trailers else emptyList()
-        )
         applyMetaWithEnrichment(meta)
         return true
     }

@@ -100,4 +100,21 @@ object M3uParser {
         }
         return result
     }
+
+    suspend fun fetchAndParse(url: String, client: okhttp3.OkHttpClient): List<M3uChannel> =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val req = okhttp3.Request.Builder()
+                    .url(url)
+                    .header("User-Agent", "VLC/3.0.20 LibVLC/3.0.20")
+                    .header("Accept", "*/*")
+                    .build()
+                val resp = client.newCall(req).execute()
+                if (!resp.isSuccessful) return@withContext emptyList()
+                val body = resp.body?.string() ?: return@withContext emptyList()
+                parse(body)
+            } catch (_: Exception) {
+                emptyList()
+            }
+        }
 }

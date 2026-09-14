@@ -16,7 +16,24 @@ object CdnHeaderResolver {
         h["Accept"] = "*/*"
         h["User-Agent"] = DEFAULT_USER_AGENT
 
-        initialHeaders?.let { h.putAll(it) }
+        initialHeaders?.forEach { (k, v) ->
+            val cleanK = k.filter { it.code in 0x21..0x7E }
+            val cleanV = v.map { ch ->
+                when {
+                    ch.code in 0x20..0x7E || ch == '\t' -> ch
+                    ch == '\u0435' -> 'e'
+                    ch == '\u0415' -> 'E'
+                    ch == '\u0430' -> 'a'
+                    ch == '\u043E' -> 'o'
+                    ch == '\u0440' -> 'p'
+                    ch == '\u0441' -> 'c'
+                    else -> ' '
+                }
+            }.joinToString("").trim()
+            if (cleanK.isNotEmpty() && cleanV.isNotEmpty()) {
+                h[cleanK] = cleanV
+            }
+        }
 
         val lower = url.lowercase(Locale.ROOT)
         when {

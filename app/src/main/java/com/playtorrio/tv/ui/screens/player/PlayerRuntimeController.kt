@@ -115,8 +115,11 @@ class PlayerRuntimeController(
         // Stall watchdog: re-seeks past the buffered edge if bufferedPosition stops
         // advancing during STATE_BUFFERING. Fires before OkHttp's readTimeout.
         internal const val STALL_WATCHDOG_THRESHOLD_MS = 15_000L
-        internal const val STALL_WATCHDOG_POLL_INTERVAL_MS = 1_000L
+        internal const val LIVE_STALL_WATCHDOG_THRESHOLD_MS = 3_000L
+        internal const val LIVE_STARTUP_STALL_WATCHDOG_THRESHOLD_MS = 6_000L
+        internal const val STALL_WATCHDOG_POLL_INTERVAL_MS = 500L
         internal const val MAX_TIMEOUT_RECOVERY_ATTEMPTS = 2
+        internal const val MAX_LIVE_RECONNECT_ATTEMPTS = 10
         internal const val ADDON_SUBTITLE_TRACK_ID_PREFIX = "playtorrio-addon-sub:"
     }
 
@@ -540,6 +543,8 @@ class PlayerRuntimeController(
     internal var hasRetriedCurrentStreamAfterUnexpectedNpe: Boolean = false
     internal var hasRetriedCurrentStreamAfterMediaPeriodHolderCrash: Boolean = false
     internal var timeoutRecoveryAttempts: Int = 0
+    internal var liveReconnectAttempts: Int = 0
+    internal var isLiveReconnecting: Boolean = false
     internal var errorRetryCount: Int = 0
     internal var consecutiveAutoPlayCount: Int = 0
     internal var errorRetryJob: Job? = null

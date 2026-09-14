@@ -33,7 +33,13 @@ object IptvClient {
     private const val TAG = "IptvClient"
     private const val UA = "VLC/3.0.20 LibVLC/3.0.20"
 
+    private val dispatcher = okhttp3.Dispatcher().apply {
+        maxRequests = 128
+        maxRequestsPerHost = 32
+    }
+
     private val httpClient = OkHttpClient.Builder()
+        .dispatcher(dispatcher)
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .followRedirects(true)
@@ -296,21 +302,47 @@ object IptvClient {
         if (categories.isEmpty()) return emptyList()
 
         val keywordsLower = channel.keywords.map { it.lowercase().trim() }.filter { it.isNotEmpty() }
-        val genreKeywords = when (channel.category.lowercase()) {
-            "combat" -> listOf("combat", "fight", "mma", "ufc", "boxing", "wwe", "wrestl", "ppv", "martial", "sport")
-            "premier", "us sports", "soccer", "racing" -> listOf("sport", "espn", "football", "soccer", "racing", "f1", "motor", "nba", "nfl", "mlb", "nhl", "ppv", "live", "bein", "dazn", "sky", "tnt", "fox")
-            "movies" -> listOf("movie", "cinema", "film", "hbo", "showtime", "starz", "vod", "premium", "entertainment")
-            "news" -> listOf("news", "info", "journal", "noticia", "actualit", "cnn", "bbc")
-            "kids" -> listOf("kid", "child", "cartoon", "animat", "disney", "nickelodeon", "junior", "jeunesse")
-            "discovery" -> listOf("doc", "discovery", "nat geo", "geograph", "history", "planet", "science")
-            "arabic" -> listOf("arab", "bein", "ssc", "mbc", "osn", "egypt", "saudi", "morocco", "qatar", "uae", "nile")
+        val channelCategoryLower = channel.category.lowercase()
+        val channelNameLower = channel.name.lowercase()
+
+        val primaryBrand = when {
+            channelCategoryLower.contains("bein") || channelNameLower.contains("bein") -> listOf("bein")
+            channelCategoryLower.contains("sky") || channelNameLower.contains("sky") -> listOf("sky")
+            channelNameLower.contains("wwe") -> listOf("wwe")
+            channelNameLower.contains("ufc") -> listOf("ufc")
+            channelNameLower.contains("tnt") || channelNameLower.contains("bt") -> listOf("tnt", "bt")
+            channelNameLower.contains("espn") -> listOf("espn")
+            channelNameLower.contains("dazn") -> listOf("dazn")
+            channelNameLower.contains("nba") -> listOf("nba")
+            channelNameLower.contains("nfl") -> listOf("nfl")
+            channelNameLower.contains("mlb") -> listOf("mlb")
+            channelNameLower.contains("nhl") -> listOf("nhl")
+            channelNameLower.contains("f1") || channelNameLower.contains("formula") -> listOf("f1", "formula")
+            else -> emptyList()
+        }
+
+        val genreKeywords = when {
+            channelCategoryLower.contains("bein") || channelNameLower.contains("bein") -> listOf("bein", "sport", "arab", "football", "qatar", "soccer", "live", "vip", "turk", "france")
+            channelCategoryLower.contains("sky") || channelNameLower.contains("sky") -> listOf("sky", "sport", "uk", "football", "premier", "f1", "cricket", "golf", "live", "vip")
+            channelNameLower.contains("tnt") || channelNameLower.contains("bt") -> listOf("tnt", "bt", "arena", "uk", "sport", "football", "soccer", "premier", "live", "vip")
+            channelCategoryLower.contains("combat") -> listOf("combat", "fight", "mma", "ufc", "boxing", "wwe", "wrestl", "ppv", "martial", "sport")
+            channelCategoryLower in listOf("premier", "us sports", "soccer", "racing") -> listOf("sport", "espn", "football", "soccer", "racing", "f1", "motor", "nba", "nfl", "mlb", "nhl", "ppv", "live", "bein", "dazn", "sky", "tnt", "fox")
+            channelCategoryLower.contains("movies") -> listOf("movie", "cinema", "film", "hbo", "showtime", "starz", "vod", "premium", "entertainment")
+            channelCategoryLower.contains("news") -> listOf("news", "info", "journal", "noticia", "actualit", "cnn", "bbc")
+            channelCategoryLower.contains("kids") -> listOf("kid", "child", "cartoon", "animat", "disney", "nickelodeon", "junior", "jeunesse")
+            channelCategoryLower.contains("discovery") -> listOf("doc", "discovery", "nat geo", "geograph", "history", "planet", "science")
+            channelCategoryLower.contains("arabic") -> listOf("arab", "bein", "ssc", "mbc", "osn", "egypt", "saudi", "morocco", "qatar", "uae", "nile")
             else -> listOf("sport", "live", "general")
         }
 
         val generalRegions = listOf("usa", "us|", "us:", "u.s.", "uk", "uk|", "uk:", "vip", "ppv")
 
-        val matched = categories.filter { cat ->
+        data class ScoredCategory(val category: IptvCategory, val score: Int)
+        val scoredList = mutableListOf<ScoredCategory>()
+
+        for (cat in categories) {
             val catName = cat.name.lowercase()
+
             val keywordMatch = keywordsLower.any { kw ->
                 if (kw.length <= 3) {
                     Regex("""(?:^|[^a-zA-Z0-9])""" + Regex.escape(kw) + """(?:$|[^a-zA-Z0-9])""").containsMatchIn(catName)
@@ -318,17 +350,31 @@ object IptvClient {
                     catName.contains(kw)
                 }
             }
-            if (keywordMatch) return@filter true
+            if (keywordMatch) {
+                scoredList.add(ScoredCategory(cat, 1))
+                continue
+            }
+
+            if (primaryBrand.isNotEmpty() && primaryBrand.any { catName.contains(it) }) {
+                scoredList.add(ScoredCategory(cat, 2))
+                continue
+            }
 
             val genreMatch = genreKeywords.any { catName.contains(it) }
-            if (genreMatch) return@filter true
+            if (genreMatch) {
+                scoredList.add(ScoredCategory(cat, 3))
+                continue
+            }
 
             val regionMatch = generalRegions.any { catName.contains(it) } &&
                     (catName.contains("sport") || catName.contains("live") || catName.contains("tv") || catName.contains("hd"))
-            regionMatch
+            if (regionMatch) {
+                scoredList.add(ScoredCategory(cat, 4))
+                continue
+            }
         }
 
-        return matched.take(6)
+        return scoredList.sortedBy { it.score }.map { it.category }.take(14)
     }
 
     suspend fun searchChannelInPortal(
@@ -374,7 +420,7 @@ object IptvClient {
                 .build()
             val customClient = httpClient.newBuilder()
                 .connectTimeout(6, TimeUnit.SECONDS)
-                .readTimeout(7, TimeUnit.SECONDS)
+                .readTimeout(12, TimeUnit.SECONDS)
                 .build()
 
             customClient.newCall(req).execute().use { res ->
@@ -489,10 +535,12 @@ object IptvClient {
     fun streamUrl(p: IptvPortal, s: IptvStream): String {
         val user = enc(p.username)
         val pass = enc(p.password)
+        val ext = if (s.containerExt.isNotBlank()) s.containerExt else "m3u8"
         return when (s.kind) {
-            "live" -> "${p.url}/live/$user/$pass/${s.streamId}.${s.containerExt}"
-            "vod" -> "${p.url}/movie/$user/$pass/${s.streamId}.${s.containerExt}"
-            else -> ""
+            "live" -> "${p.url}/live/$user/$pass/${s.streamId}.$ext"
+            "vod" -> "${p.url}/movie/$user/$pass/${s.streamId}.$ext"
+            "series" -> "${p.url}/series/$user/$pass/${s.streamId}.$ext"
+            else -> "${p.url}/live/$user/$pass/${s.streamId}.$ext"
         }
     }
 

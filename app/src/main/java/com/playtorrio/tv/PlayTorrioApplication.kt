@@ -46,6 +46,7 @@ class PlayTorrioApplication : Application(), SingletonImageLoader.Factory {
     @Inject lateinit var sentrySettingsDataStore: SentrySettingsDataStore
     @Inject lateinit var simklAnimeIdPreferenceHolder: SimklAnimeIdPreferenceHolder
     @Inject lateinit var addonPreferences: com.playtorrio.tv.data.local.AddonPreferences
+    @Inject lateinit var pluginManager: com.playtorrio.tv.core.plugin.PluginManager
 
     companion object {
         /**
@@ -85,6 +86,11 @@ class PlayTorrioApplication : Application(), SingletonImageLoader.Factory {
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
             try {
                 addonPreferences.ensureMigrated()
+            } catch (e: Exception) {
+                // Ignore
+            }
+            try {
+                pluginManager.ensureBundledPhisherRepository()
             } catch (e: Exception) {
                 // Ignore
             }

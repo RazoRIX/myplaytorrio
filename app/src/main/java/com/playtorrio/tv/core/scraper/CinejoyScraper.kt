@@ -21,6 +21,8 @@ import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 class CinejoyScraper : StreamScraper {
+    override val id: String = "Cinejoy"
+    override val displayName: String = "Cinejoy"
     override val name: String = "PlayTorrioHTTP"
 
     companion object {
@@ -287,7 +289,8 @@ class CinejoyScraper : StreamScraper {
                                             description = "$label • $quality • MP4",
                                             url = fileUrl,
                                             quality = quality,
-                                            headers = defaultHeaders
+                                            headers = defaultHeaders,
+                                            provider = "Cinejoy"
                                         )
                                     )
                                 }

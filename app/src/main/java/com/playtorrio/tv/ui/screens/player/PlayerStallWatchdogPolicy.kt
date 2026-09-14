@@ -9,6 +9,8 @@ import androidx.media3.common.C
 internal object PlayerStallWatchdogPolicy {
 
     const val SKIP_PAST_BUFFERED_MS = 250L
+    const val LIVE_THRESHOLD_MS = 3_000L
+    const val LIVE_STARTUP_THRESHOLD_MS = 6_000L
 
     data class Input(
         val bufferedPositionMs: Long,
@@ -17,10 +19,15 @@ internal object PlayerStallWatchdogPolicy {
         val stalledForMs: Long,
         val thresholdMs: Long = PlayerRuntimeController.STALL_WATCHDOG_THRESHOLD_MS,
         val skipPastBufferedMs: Long = SKIP_PAST_BUFFERED_MS,
+        val isLive: Boolean = false,
+        val hasRenderedFirstFrame: Boolean = true,
+        val userPausedManually: Boolean = false,
     )
 
     sealed class Decision {
         data object KeepWaiting : Decision()
+        data object SkipUserPaused : Decision()
+        data object ReconnectLiveStream : Decision()
         data object SkipUnknownDuration : Decision()
         data object SkipBufferedNotAhead : Decision()
         data object SkipTargetNotForward : Decision()
@@ -28,9 +35,24 @@ internal object PlayerStallWatchdogPolicy {
     }
 
     fun evaluate(input: Input): Decision {
-        if (input.stalledForMs < input.thresholdMs) {
+        if (input.userPausedManually) {
+            return Decision.SkipUserPaused
+        }
+
+        val effectiveThresholdMs = if (input.isLive) {
+            if (input.hasRenderedFirstFrame) LIVE_THRESHOLD_MS else LIVE_STARTUP_THRESHOLD_MS
+        } else {
+            input.thresholdMs
+        }
+
+        if (input.stalledForMs < effectiveThresholdMs) {
             return Decision.KeepWaiting
         }
+
+        if (input.isLive) {
+            return Decision.ReconnectLiveStream
+        }
+
         val playheadMs = input.playheadMs.coerceAtLeast(0L)
         val durationMs = input.durationMs
         if (durationMs == C.TIME_UNSET || durationMs <= 0L) {

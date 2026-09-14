@@ -123,7 +123,8 @@ fun AddonManagerScreen(
     showBuiltInHeader: Boolean = true,
     onBackPress: () -> Unit = {},
     onNavigateToCatalogOrder: () -> Unit = {},
-    onNavigateToCollections: () -> Unit = {}
+    onNavigateToCollections: () -> Unit = {},
+    onNavigateToPlayTorrioHttpProviders: () -> Unit = {}
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val firstAddonToggleFocusRequester = remember { FocusRequester() }
@@ -421,6 +422,10 @@ fun AddonManagerScreen(
                 item {
                     CollectionsEntryCard(onClick = onNavigateToCollections)
                 }
+            }
+
+            item {
+                PlayTorrioHttpEntryCard(onClick = onNavigateToPlayTorrioHttpProviders)
             }
 
             item {
@@ -779,6 +784,67 @@ private fun CollectionsEntryCard(onClick: () -> Unit) {
                     )
                     Text(
                         text = stringResource(R.string.collections_card_subtitle),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = PlayTorrioTheme.colors.TextSecondary
+                    )
+                }
+            }
+            Icon(
+                imageVector = Icons.Default.ChevronRight,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+                tint = PlayTorrioTheme.colors.TextSecondary
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun PlayTorrioHttpEntryCard(onClick: () -> Unit) {
+    var isFocused by remember { mutableStateOf(false) }
+
+    Surface(
+        onClick = onClick,
+        modifier = Modifier
+            .fillMaxWidth()
+            .onFocusChanged { isFocused = it.isFocused },
+        colors = ClickableSurfaceDefaults.colors(
+            containerColor = PlayTorrioTheme.colors.BackgroundCard,
+            focusedContainerColor = PlayTorrioTheme.colors.FocusBackground
+        ),
+        border = ClickableSurfaceDefaults.border(
+            focusedBorder = Border(
+                border = PlayTorrioTheme.focusRing.border(PlayTorrioTheme.spacing.xxs),
+                shape = RoundedCornerShape(18.dp)
+            )
+        ),
+        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(18.dp)),
+        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.01f)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(20.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.FolderOpen,
+                    contentDescription = null,
+                    modifier = Modifier.size(28.dp),
+                    tint = if (isFocused) PlayTorrioTheme.colors.Secondary else PlayTorrioTheme.colors.TextSecondary
+                )
+                Spacer(modifier = Modifier.width(PlayTorrioTheme.spacing.lg))
+                Column {
+                    Text(
+                        text = "PlayTorrioHTTP (Built-in)",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = PlayTorrioTheme.colors.TextPrimary
+                    )
+                    Text(
+                        text = "Configure 40+ HTTP streaming providers & extensions (Cinejoy, IStreamCDN, 111477, etc.)",
                         style = MaterialTheme.typography.bodySmall,
                         color = PlayTorrioTheme.colors.TextSecondary
                     )
