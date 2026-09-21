@@ -41,10 +41,11 @@ object AudioEnhancementController {
             }
         })
 
-        runCatching { player.audioSessionId }
-            .getOrNull()
-            ?.takeIf { it > 0 }
-            ?.let(::bindSession)
+        // Do not query player.audioSessionId here. PlayTorrio's customized Media3
+        // Player API does not expose that property. Because this controller is attached
+        // immediately after ExoPlayer.Builder(...).build(), the AudioTrack session is
+        // created later during prepare/playback and is delivered through the listener
+        // callback above.
     }
 
     @Synchronized
