@@ -81,7 +81,7 @@ jobs:
           mkdir -p enhanced-apks
           find app/build/outputs/apk/full \
             -type f \
-            -name '*arm64-v7a*release*.apk' \
+            -name '*armeabi-v7a*release*.apk' \
             -print \
             -exec cp '{}' enhanced-apks/ \;
       
