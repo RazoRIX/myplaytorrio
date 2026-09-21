@@ -36,6 +36,41 @@ def write_if_changed(path: Path, text: str) -> bool:
     return True
 
 
+def cleanup_v1_renderer_patch() -> None:
+    """Undo files/source edits made by the first renderer-factory based kit."""
+    obsolete = [
+        PLAYER_DIR / "EnhancedRenderersFactory.kt",
+        PLAYER_DIR / "audio" / "AudioEnhancementDsp.kt",
+        PLAYER_DIR / "audio" / "Biquad.kt",
+        PLAYER_DIR / "audio" / "PlayTorrioAudioEnhancementProcessor.kt",
+    ]
+    for path in obsolete:
+        if path.exists():
+            path.unlink()
+            log(f"DEL  {path.relative_to(ROOT)} (obsolete v1 integration)")
+
+    if not PLAYER_DIR.exists():
+        return
+
+    for path in PLAYER_DIR.rglob("*.kt"):
+        if path.name in {"AudioEnhancementControls.kt", "AudioEnhancementController.kt", "AudioEnhancementLevel.kt"}:
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        original = text
+        # Re-place the v1 auto-injected control so it is guaranteed to be beside the whole CC button.
+        text = re.sub(r'\n[ \t]*AudioEnhancementControls\(\)', '', text)
+        if "EnhancedRenderersFactory(" in text:
+            text = text.replace("EnhancedRenderersFactory(", "DefaultRenderersFactory(")
+            # v1 removed this import. Restore it only when the unqualified symbol is now used.
+            if "DefaultRenderersFactory" in text and "import androidx.media3.exoplayer.DefaultRenderersFactory" not in text:
+                m = re.search(r'^package\s+[^\n]+\n', text, flags=re.M)
+                if m:
+                    text = text[:m.end()] + "\nimport androidx.media3.exoplayer.DefaultRenderersFactory\n" + text[m.end():]
+        if text != original:
+            path.write_text(text, encoding="utf-8")
+            log(f"FIX  {path.relative_to(ROOT)}: restored PlayTorrio renderer factory from v1 kit")
+
+
 def copy_payload() -> None:
     if not PAYLOAD.exists():
         fail(f"Enhancement payload not found: {PAYLOAD}")
@@ -47,8 +82,8 @@ def copy_payload() -> None:
         shutil.copy2(source, target)
         copied += 1
         log(f"ADD  {target.relative_to(ROOT)}")
-    if copied < 7:
-        fail(f"Expected at least 7 Kotlin enhancement files, copied only {copied}")
+    if copied < 3:
+        fail(f"Expected at least 3 Kotlin enhancement files, copied only {copied}")
 
 
 def patch_application_id() -> None:
@@ -125,55 +160,114 @@ def player_kotlin_files() -> list[Path]:
     ]
 
 
-def patch_player_audio_sink() -> None:
+def _find_terminal_exoplayer_build(text: str, start: int) -> tuple[int, int] | None:
+    """Find the outer ExoPlayer.Builder(...).foo(...).build() call, ignoring nested build() calls."""
+    ctor = text.find("(", start)
+    if ctor < 0:
+        return None
+
+    # Match the constructor closing paren first, tolerating strings/comments well enough for Kotlin chains.
+    depth = 0
+    i = ctor
+    state = "code"
+    ctor_end = -1
+    while i < len(text):
+        c = text[i]
+        n = text[i + 1] if i + 1 < len(text) else ""
+        if state == "code":
+            if text.startswith('"""', i):
+                state = "triple"; i += 3; continue
+            if c == '"': state = "string"
+            elif c == "'": state = "char"
+            elif c == '/' and n == '/': state = "line"; i += 1
+            elif c == '/' and n == '*': state = "block"; i += 1
+            elif c == '(':
+                depth += 1
+            elif c == ')':
+                depth -= 1
+                if depth == 0:
+                    ctor_end = i + 1
+                    break
+        elif state == "string":
+            if c == '\\': i += 1
+            elif c == '"': state = "code"
+        elif state == "char":
+            if c == '\\': i += 1
+            elif c == "'": state = "code"
+        elif state == "triple":
+            if text.startswith('"""', i): state = "code"; i += 3; continue
+        elif state == "line":
+            if c == '\n': state = "code"
+        elif state == "block":
+            if c == '*' and n == '/': state = "code"; i += 1
+        i += 1
+    if ctor_end < 0:
+        return None
+
+    # From the end of the constructor, an outer .build() is seen at nesting depth zero.
+    depth = 0
+    i = ctor_end
+    limit = min(len(text), ctor_end + 12000)
+    state = "code"
+    while i < limit:
+        c = text[i]
+        n = text[i + 1] if i + 1 < len(text) else ""
+        if state == "code":
+            if text.startswith('"""', i):
+                state = "triple"; i += 3; continue
+            if c == '"': state = "string"
+            elif c == "'": state = "char"
+            elif c == '/' and n == '/': state = "line"; i += 1
+            elif c == '/' and n == '*': state = "block"; i += 1
+            elif c in '([{': depth += 1
+            elif c in ')]}': depth = max(0, depth - 1)
+            elif depth == 0 and text.startswith('.build()', i):
+                return i, i + len('.build()')
+            elif depth == 0 and c == ';':
+                return None
+        elif state == "string":
+            if c == '\\': i += 1
+            elif c == '"': state = "code"
+        elif state == "char":
+            if c == '\\': i += 1
+            elif c == "'": state = "code"
+        elif state == "triple":
+            if text.startswith('"""', i): state = "code"; i += 3; continue
+        elif state == "line":
+            if c == '\n': state = "code"
+        elif state == "block":
+            if c == '*' and n == '/': state = "code"; i += 1
+        i += 1
+    return None
+
+
+def patch_player_audio_session_hook() -> None:
     files = player_kotlin_files()
+    preferred_names = ["PlayerRuntimeControllerInitialization.kt", "PlayerViewModel.kt", "PlayerScreen.kt"]
+    files.sort(key=lambda p: (preferred_names.index(p.name) if p.name in preferred_names else 99, p.name))
+    hook = '.also { com.playtorrio.tv.ui.screens.player.audio.AudioEnhancementController.attachToPlayer(it) }'
 
-    # Preferred path: keep all of PlayTorrio's existing renderer configuration and simply swap
-    # the factory class for our subclass. Chained settings remain intact.
     for path in files:
         text = path.read_text(encoding="utf-8")
-        if "DefaultRenderersFactory" not in text:
-            continue
-        if not re.search(r'\bDefaultRenderersFactory\s*\(', text):
-            continue
-        new = re.sub(r'\bDefaultRenderersFactory\s*\(', 'EnhancedRenderersFactory(', text)
-        # If the old class was imported, remove the import to avoid an unused import warning.
-        new = re.sub(r'^\s*import\s+androidx\.media3\.exoplayer\.DefaultRenderersFactory\s*\n', '', new, flags=re.M)
-        path.write_text(new, encoding="utf-8")
-        log(f"EDIT {path.relative_to(ROOT)}: DefaultRenderersFactory -> EnhancedRenderersFactory")
-        return
+        if "AudioEnhancementController.attachToPlayer" in text:
+            log(f"OK   {path.relative_to(ROOT)} already attaches AudioEnhancementController")
+            return
 
-    # Common simpler path: ExoPlayer.Builder(context) with the default renderer factory.
-    simple_context = r'(?:[A-Za-z_][A-Za-z0-9_]*)(?:\.[A-Za-z_][A-Za-z0-9_]*)*'
-    one_arg = re.compile(rf'ExoPlayer\.Builder\(\s*({simple_context})\s*\)')
-    for path in files:
-        text = path.read_text(encoding="utf-8")
-        match = one_arg.search(text)
-        if not match:
-            continue
-        ctx = match.group(1)
-        new = text[:match.start()] + f"ExoPlayer.Builder({ctx}, EnhancedRenderersFactory({ctx}))" + text[match.end():]
-        path.write_text(new, encoding="utf-8")
-        log(f"EDIT {path.relative_to(ROOT)}: installed EnhancedRenderersFactory in ExoPlayer.Builder")
-        return
+        search_from = 0
+        while True:
+            idx = text.find("ExoPlayer.Builder", search_from)
+            if idx < 0:
+                break
+            span = _find_terminal_exoplayer_build(text, idx)
+            if span is not None:
+                a, b = span
+                new = text[:b] + hook + text[b:]
+                path.write_text(new, encoding="utf-8")
+                log(f"EDIT {path.relative_to(ROOT)}: attached enhancements to ExoPlayer audio session")
+                return
+            search_from = idx + len("ExoPlayer.Builder")
 
-    # Last controlled fallback: replace an explicitly supplied renderer factory only in the player.
-    two_arg = re.compile(
-        rf'ExoPlayer\.Builder\(\s*({simple_context})\s*,\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\)'
-    )
-    for path in files:
-        text = path.read_text(encoding="utf-8")
-        match = two_arg.search(text)
-        if not match:
-            continue
-        ctx = match.group(1)
-        old_factory = match.group(2)
-        new = text[:match.start()] + f"ExoPlayer.Builder({ctx}, EnhancedRenderersFactory({ctx}))" + text[match.end():]
-        path.write_text(new, encoding="utf-8")
-        log(f"EDIT {path.relative_to(ROOT)}: replaced renderer factory '{old_factory}' with EnhancedRenderersFactory")
-        return
-
-    fail("Could not locate the movie/TV ExoPlayer renderer factory. No unsafe global patch was attempted.")
+    fail("Could not locate a terminal ExoPlayer.Builder(...).build() in the movie/TV player.")
 
 
 def build_pairs(text: str) -> tuple[dict[int, int], dict[int, int]]:
@@ -268,39 +362,43 @@ def find_subtitle_button_insertion(text: str) -> tuple[int, str, str] | None:
     marker_positions = sorted(set(marker_positions))
 
     candidates: list[tuple[int, int, int, str, str]] = []
-    # tuple score, insertion_pos, start, call_name, indent
     for marker in marker_positions:
         for op, cl in parens.items():
-            if not (op < marker < cl):
-                continue
             ident = identifier_before(text, op)
             if ident is None:
                 continue
             name, start = ident
             lname = name.lower()
             score = 0
-            if "button" in lname:
-                score += 100
-            if "control" in lname:
-                score += 40
-            if "action" in lname:
-                score += 20
-            if "icon" in lname:
-                score += 10
+            if "button" in lname: score += 100
+            if "control" in lname: score += 40
+            if "action" in lname: score += 20
+            if "icon" in lname: score += 10
             if score == 0:
                 continue
-            # Prefer the tightest enclosing call and occurrences near icon/content descriptions.
-            score += max(0, 30 - min(30, (cl - op) // 100))
-            around = text[max(0, marker - 180):min(len(text), marker + 180)].lower()
-            if "subtitle" in around or "caption" in around:
-                score += 25
-            end = cl + 1
-            j = end
+
+            call_end = cl + 1
+            # Compose buttons usually put their visual/contentDescription inside a trailing lambda,
+            # so treat that lambda as part of the enclosing call when locating the CC control.
+            j = call_end
             while j < len(text) and text[j].isspace():
                 j += 1
+            trailing_lambda = None
             if j < len(text) and text[j] == '{' and j in braces:
-                end = braces[j] + 1
-            candidates.append((score, end, start, name, line_indent(text, start)))
+                trailing_lambda = (j, braces[j])
+                call_end = braces[j] + 1
+
+            marker_inside = op < marker < cl
+            if trailing_lambda is not None:
+                marker_inside = marker_inside or (trailing_lambda[0] < marker < trailing_lambda[1])
+            if not marker_inside:
+                continue
+
+            score += max(0, 30 - min(30, (call_end - start) // 100))
+            around = text[max(0, marker - 180):min(len(text), marker + 180)].lower()
+            if "subtitle" in around or "caption" in around or '"cc"' in around:
+                score += 25
+            candidates.append((score, call_end, start, name, line_indent(text, start)))
 
     if candidates:
         candidates.sort(key=lambda x: (x[0], -abs(x[1] - x[2])), reverse=True)
@@ -311,8 +409,6 @@ def find_subtitle_button_insertion(text: str) -> tuple[int, str, str] | None:
     for marker in marker_positions:
         row_candidates: list[tuple[int, int, int, str]] = []
         for op, cl in parens.items():
-            if not (op < marker < cl):
-                continue
             ident = identifier_before(text, op)
             if ident is None:
                 continue
@@ -379,22 +475,23 @@ def patch_player_ui() -> None:
 
 
 def sanity_check() -> None:
-    # Make failures obvious in CI rather than producing an APK with a cosmetic or missing feature.
     gradle = (APP / "build.gradle.kts").read_text(encoding="utf-8")
     if f'applicationId = "{NEW_APP_ID}"' not in gradle:
         fail("Side-by-side applicationId sanity check failed")
 
-    player_text = "\n".join(p.read_text(encoding="utf-8", errors="ignore") for p in PLAYER_DIR.glob("*.kt"))
+    all_player_files = list(PLAYER_DIR.rglob("*.kt"))
+    player_text = "\n".join(p.read_text(encoding="utf-8", errors="ignore") for p in all_player_files)
     if "AudioEnhancementControls()" not in player_text:
         fail("UI injection sanity check failed")
-    if "EnhancedRenderersFactory" not in player_text:
-        fail("Audio renderer injection sanity check failed")
+    if "AudioEnhancementController.attachToPlayer" not in player_text:
+        fail("Audio-session hook sanity check failed")
+    if "EnhancedRenderersFactory" in player_text or "PlayTorrioAudioEnhancementProcessor" in player_text:
+        fail("Obsolete v1 renderer/audio-processor integration is still present")
 
     required = [
         PLAYER_DIR / "AudioEnhancementControls.kt",
-        PLAYER_DIR / "EnhancedRenderersFactory.kt",
-        PLAYER_DIR / "audio" / "AudioEnhancementDsp.kt",
-        PLAYER_DIR / "audio" / "PlayTorrioAudioEnhancementProcessor.kt",
+        PLAYER_DIR / "audio" / "AudioEnhancementLevel.kt",
+        PLAYER_DIR / "audio" / "AudioEnhancementController.kt",
     ]
     missing = [str(p.relative_to(ROOT)) for p in required if not p.exists()]
     if missing:
@@ -404,9 +501,10 @@ def sanity_check() -> None:
 def main() -> None:
     log("PlayTorrio Enhanced patcher")
     log(f"Repo root: {ROOT}")
+    cleanup_v1_renderer_patch()
     copy_payload()
     patch_application_id()
-    patch_player_audio_sink()
+    patch_player_audio_session_hook()
     patch_player_ui()
     sanity_check()
     log("SUCCESS: audio enhancements and side-by-side app identity applied")
