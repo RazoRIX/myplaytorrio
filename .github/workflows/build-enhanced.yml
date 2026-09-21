@@ -75,12 +75,17 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleFullRelease --no-daemon --stacktrace
 
-      - name: Collect APKs
+      - name: Collect ARM64 APK
         shell: bash
         run: |
           mkdir -p enhanced-apks
-          find app/build/outputs/apk/full -type f -name '*.apk' -print -exec cp '{}' enhanced-apks/ \;
-          test -n "$(find enhanced-apks -type f -name '*.apk' -print -quit)"
+          find app/build/outputs/apk/full \
+            -type f \
+            -name '*arm64-v7a*release*.apk' \
+            -print \
+            -exec cp '{}' enhanced-apks/ \;
+      
+          test -n "$(find enhanced-apks -name '*.apk' -print -quit)"
           ls -lh enhanced-apks
 
       - name: Upload PlayTorrio Enhanced APK
