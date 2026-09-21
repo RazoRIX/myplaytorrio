@@ -47,11 +47,11 @@ jobs:
           git diff -- app app/src > enhanced-source.patch || true
           git diff --stat
 
-      - name: Build Full Debug APK
+      - name: Build Full Release APK
         shell: bash
         run: |
           chmod +x gradlew
-          ./gradlew assembleFullDebug --no-daemon --stacktrace
+          ./gradlew assembleFullRelease --no-daemon --stacktrace
 
       - name: Collect APKs
         shell: bash
